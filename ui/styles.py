@@ -1,0 +1,27 @@
+# ui/styles.py — 全局设计令牌
+
+BG_BASE    = "#0d0f12"
+BG_SURFACE = "#13161c"
+BG_RAISED  = "#1a1e27"
+BORDER_SUB = "#1e2230"
+BORDER_MID = "#272d3d"
+ACCENT     = "#7c6af7"
+ACCENT_ALT = "#5b8df5"
+ACCENT_GRN = "#34d399"
+ACCENT_AMB = "#f59e0b"
+ACCENT_RED = "#f87171"
+TEXT_PRI   = "#e8eaf0"
+TEXT_SEC   = "#8b92a8"
+TEXT_DIM   = "#404660"
+
+# 旧名称别名，供尚未迁移的文件使用
+BG0      = BG_BASE
+BG1      = BG_SURFACE
+BG2      = BG_RAISED
+BORDER   = BORDER_MID
+ACCENT2  = ACCENT_ALT
+
+# 圆角 & 间距
+CORNER_LARGE  = 12
+CORNER_SMALL  = 6
+MARGIN_SIDEBAR = 10
