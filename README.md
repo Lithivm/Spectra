@@ -1,6 +1,7 @@
 # Spectra
 A modern spectrogram analyzer for music enthusiasts and HiFi listeners
 # Spectra
+![screenshot](demo.png)
 
 A GPU-accelerated audio spectrogram analyzer with a Claude-inspired dark UI.
 Drag in a file, see its spectrum, waveform, and quality diagnostics instantly.
