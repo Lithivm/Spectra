@@ -1,0 +1,27 @@
+# ui/styles.py — 全局设计令牌 (Claude-inspired warm dark theme)
+
+BG_BASE    = "#222526"
+BG_SURFACE = "#303436"
+BG_RAISED  = "#292d2e"
+BORDER_SUB = "#2e3133"
+BORDER_MID = "#3d4143"
+ACCENT     = "#F0EDE8"
+ACCENT_ALT = "#1C1B19"
+ACCENT_GRN = "#34d399"
+ACCENT_AMB = "#F5A623"
+ACCENT_RED = "#E0554D"
+TEXT_PRI   = "#F0EDE8"
+TEXT_SEC   = "#A09D96"
+TEXT_DIM   = "#5C5952"
+
+# 旧名称别名，供尚未迁移的文件使用
+BG0      = BG_BASE
+BG1      = BG_SURFACE
+BG2      = BG_RAISED
+BORDER   = BORDER_MID
+ACCENT2  = ACCENT_ALT
+
+# 圆角 & 间距
+CORNER_LARGE  = 12
+CORNER_SMALL  = 6
+MARGIN_SIDEBAR = 10
