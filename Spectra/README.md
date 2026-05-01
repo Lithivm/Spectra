@@ -46,13 +46,8 @@ Drag an audio file into the window, or click **Open File** (打开文件).
 | WAV | `.wav` |
 | MP3 | `.mp3` |
 | M4A / ALAC | `.m4a` `.mp4` |
-| OGG Vorbis | `.ogg` |
 | AAC | `.aac` |
-| Opus | `.opus` |
-| WMA | `.wma` |
 | Monkey's Audio | `.ape` |
-| True Audio | `.tta` |
-| DSD | `.dsf` `.dff` |
 
 ## Colormaps · 色板
 
