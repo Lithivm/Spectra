@@ -16,13 +16,17 @@ from PyQt6.QtWidgets import (
     QLabel, QMainWindow, QMessageBox, QStatusBar, QWidget,
     QFrame, QPushButton, QComboBox, QSizePolicy,
     QGraphicsDropShadowEffect, QGridLayout,
+    QProgressBar,
 )
+from PyQt6.QtCore import QPropertyAnimation, QEasingCurve
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor, QPainter
+
 
 from analyzer.core import AudioAnalyzer
 from analyzer.spectrogram import PALETTE
 from analyzer import is_audio_file, SUPPORTED_EXTENSIONS
 from ui.metadata_panel import MetadataPanel
-from ui.spectrogram_widget import SpectrogramWidget, SpectrogramGLWidget
+from ui.spectrogram_widget import SpectrogramWidget, SpectrogramGLWidget, _YAxisWidget, _XAxisWidget, _ColorBarWidget
 from ui.waveform_widget import WaveformWidget
 from ui.styles import (
     BG_BASE, BG_SURFACE, BG_RAISED,
@@ -103,7 +107,7 @@ QPushButton#primary {{
 }}
 QPushButton#primary:hover {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-        stop:0 #8f7ef9, stop:1 #6fa0f7);
+        stop:0 #E0B55A, stop:1 #C89A3A);
     color: white;
 }}
 QScrollBar:vertical {{
@@ -141,6 +145,73 @@ def _shadow(radius: int = 24, opacity: int = 70) -> QGraphicsDropShadowEffect:
 
 _card_ids = itertools.count()
 
+class _SpectrumProgress(QWidget):
+    """Floating progress bar overlay for the spectrogram."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._set_stylesheet()
+        self._opacity = QGraphicsOpacityEffect(self)
+        self._opacity.setOpacity(0)
+        self._progress = QProgressBar(self)
+        self._progress.setFixedHeight(6)
+        self._progress.setValue(0)
+        self.setEffect(self._opacity)
+        self._anim = QPropertyAnimation(self._opacity, b"opacity")
+        self._anim.setDuration(800)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._anim.finished.connect(self._on_anim_finished)
+
+    def _set_stylesheet(self) -> None:
+        self.setStyleSheet(f"""
+            #_spectrum_progress {{
+                background-color: rgba(20, 20, 24, 0.6);
+                border: none;
+                border-radius: 3px;
+            }}
+            #_spectrum_progress QProgressBar::chunk {{
+                background-color: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #ff7535,
+                    stop:0.5 #ffa319,
+                    stop:1 #ffcf49
+                );
+                border: none;
+                border-radius: 3px;
+            }}
+        """)
+        self.setObjectName("_spectrum_progress")
+
+    def show_progress(self) -> None:
+        self._opacity.setOpacity(0.9)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(0.9)
+        self._anim.start()
+
+    def update(self, value: int) -> None:
+        self._progress.setValue(value)
+
+    def fade_out(self) -> None:
+        self._anim.setStartValue(0.9)
+        self._anim.setEndValue(0.0)
+        self._anim.start()
+
+    def _on_anim_finished(self) -> None:
+        if self._opacity.opacity() < 0.01:
+            self.hide()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        w, h = event.size().width(), event.size().height()
+        bar_w = int(w * 0.5)
+        self._progress.setGeometry(
+            (w - bar_w) // 2,
+            (h - 6) // 2,
+            bar_w,
+            6,
+        )
+
 def _card(radius: int = 12) -> QWidget:
     name = f"_card_{next(_card_ids)}"
     w = QWidget()
@@ -157,6 +228,7 @@ def _card(radius: int = 12) -> QWidget:
 
 class _SpectrumWorker(QThread):
     finished = pyqtSignal(object, object, object, str)
+    fading = pyqtSignal()
 
     def __init__(self, analyzer: AudioAnalyzer, n_fft: int = 2048,
                  mode: str = "multi") -> None:
@@ -172,21 +244,26 @@ class _SpectrumWorker(QThread):
         print(f"[TIMER] STFT (n_fft={self._n_fft}, mode={self._mode}): "
               f"{time.perf_counter() - t0:.2f}s")
         self.finished.emit(freqs, times, db, self._mode)
+        self.fading.emit()
 
 
 class _QualityWorker(QThread):
     finished = pyqtSignal(object)
+    progress = pyqtSignal(int)
 
     def __init__(self, analyzer: AudioAnalyzer) -> None:
         super().__init__()
         self._analyzer = analyzer
 
     def run(self) -> None:
+        self.progress.emit(33)  # audio decoded
         try:
             result = self._analyzer.analyze_quality()
         except Exception:
             result = None
+        self.progress.emit(90)  # STFT done
         self.finished.emit(result)
+        self.progress.emit(100)  # render done
 
 
 class MainWindow(QMainWindow):
@@ -199,6 +276,9 @@ class MainWindow(QMainWindow):
         self._quality_worker: _QualityWorker | None = None
         self._wave: WaveformWidget | None = None
         self._spec: SpectrogramGLWidget | None = None
+        self._y_axis: _YAxisWidget | None = None
+        self._x_axis: _XAxisWidget | None = None
+        self._colorbar: _ColorBarWidget | None = None
         self._meta: MetadataPanel | None = None
         self._analyzer: AudioAnalyzer | None = None
         self._current_palette = "inferno"
@@ -243,14 +323,49 @@ class MainWindow(QMainWindow):
         sl.setContentsMargins(0, 0, 0, 0)
         sl.setSpacing(0)
 
-        # ---- 4-region grid layout (axes/colorbar are placeholders) ----
+        # ---- Grid: filename | Y-axis | spectrogram | colorbar | X-axis ----
         _grid = QGridLayout()
         _grid.setContentsMargins(0, 0, 0, 0)
         _grid.setSpacing(0)
 
+        SIDE = 36
+
+        _grid.setColumnMinimumWidth(0, SIDE)
+        _grid.setColumnStretch(0, 0)
+        _grid.setColumnStretch(1, 1)
+        _grid.setColumnMinimumWidth(2, SIDE)
+        _grid.setColumnStretch(2, 0)
+
+        _grid.setRowMinimumHeight(0, SIDE)
+        _grid.setRowStretch(0, 0)
+        _grid.setRowStretch(1, 1)
+        _grid.setRowMinimumHeight(2, SIDE)
+        _grid.setRowStretch(2, 0)
+
+        # Row 0: filename
+        self._filename_widget = QLabel()
+        self._filename_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._filename_widget.setStyleSheet(
+            f"color: {TEXT_DIM}; font-size: 11px; background: transparent;")
+        _grid.addWidget(self._filename_widget, 0, 0, 1, 3)
+
+        # Row 1
+        self._y_axis = _YAxisWidget()
+        self._y_axis.setFixedWidth(SIDE)
+        _grid.addWidget(self._y_axis, 1, 0)
+
         self._spec = SpectrogramGLWidget()
         self._spec.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        _grid.addWidget(self._spec, 0, 0, 1, 1)
+        _grid.addWidget(self._spec, 1, 1)
+
+        self._colorbar = _ColorBarWidget()
+        self._colorbar.setFixedWidth(SIDE)
+        _grid.addWidget(self._colorbar, 0, 2, 3, 1)
+
+        # Row 2: X-axis spans all 3 columns, data offset-aligned to spectrogram
+        self._x_axis = _XAxisWidget()
+        self._x_axis.setFixedHeight(SIDE)
+        _grid.addWidget(self._x_axis, 2, 0, 1, 3)
 
         sl.addLayout(_grid, 0)
 
@@ -381,10 +496,6 @@ class MainWindow(QMainWindow):
 
     def _create_statusbar(self) -> None:
         sb = QStatusBar()
-        self._filename_label = QLabel("")
-        self._filename_label.setStyleSheet(
-            f"color: {TEXT_DIM}; font-size: 10px; font-family: 'Consolas'; background: transparent;")
-        sb.addWidget(self._filename_label, 1)
         sb.setFixedHeight(24)
         self._status_label = QLabel(t("就绪", "Ready"))
         self._status_label.setStyleSheet(
@@ -396,10 +507,11 @@ class MainWindow(QMainWindow):
         self._current_palette = name
         if self._spec:
             self._spec._on_palette_changed(name)
+            if self._colorbar:
+                self._colorbar.set_data(self._spec._lut_np)
 
     def _on_mode_changed(self, mode: str) -> None:
         self._mode = mode
-        # In multi mode, FFT size is auto-determined per band
         self._fft_combo.setEnabled(mode != "multi")
         if self._current_path:
             self._load_file(self._current_path)
@@ -407,6 +519,8 @@ class MainWindow(QMainWindow):
     def _on_yscale_changed(self, scale: str) -> None:
         if self._spec:
             self._spec._on_yscale_changed(scale)
+            if self._y_axis and self._spec.frequencies is not None:
+                self._y_axis.set_data(self._spec.frequencies, scale)
 
     def _on_fft_size_changed(self, size_str: str) -> None:
         self._fft_size = int(size_str)
@@ -434,11 +548,16 @@ class MainWindow(QMainWindow):
             'sample_rate': self._analyzer.sample_rate,
             'mode': mode,
         })
+        self._spec.hide_progress()
+        self._y_axis.set_data(freqs, self._spec._yscale_mode)
+        self._x_axis.set_data(self._analyzer.duration)
+        self._colorbar.set_data(self._spec._lut_np)
         print(f"[PROFILE] _on_spectrum_done (set_audio + processEvents): {time.perf_counter() - t_set:.3f}s")
         QCoreApplication.processEvents()
 
     def _load_file(self, path: Path) -> None:
         try:
+            self._spec.show_progress()
             self._cancel_spectrum()
             self._cancel_quality()
             t0 = time.perf_counter()
@@ -450,6 +569,7 @@ class MainWindow(QMainWindow):
             # quality analysis runs in background
             self._quality_worker = _QualityWorker(self._analyzer)
             self._quality_worker.finished.connect(self._on_quality_done)
+            self._quality_worker.progress.connect(self._spec.show_progress)
             self._quality_worker.start()
             t0 = time.perf_counter()
             self._wave.set_audio({
@@ -462,11 +582,12 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"audio-analyzer  —  {path.name}")
             self._status_label.setText(
                 f"{path.name}  ·  {self._analyzer.sample_rate/1000:.1f} kHz  ·  "
-                f"{self._analyzer.duration:.1f}s"
+                f"{int(self._analyzer.duration)//60}m{int(self._analyzer.duration)%60}s"
             )
-            self._filename_label.setText(path.name)
+            self._filename_widget.setText(path.name)
             self._spectrum_worker = _SpectrumWorker(self._analyzer, self._fft_size, self._mode)
             self._spectrum_worker.finished.connect(self._on_spectrum_done)
+            self._spectrum_worker.fading.connect(self._spec.hide_progress)
             self._spectrum_worker.start()
         except Exception:
             print(f"\n[LOAD ERROR] {path}\n")
@@ -535,9 +656,8 @@ class MainWindow(QMainWindow):
         self._pal_label.setText(t("调色板", "Palette"))
         self._mode_label.setText(t("模式", "Mode"))
         self._yscale_label.setText(t("刻度", "Scale"))
-        self._status_label.setText(t("就绪", "Ready"))
-        self._filename_label.setText(t("拖入音频文件  ·  或按 Ctrl+O 打开",
-                                  "Drag audio file  ·  or press Ctrl+O"))
+        if not self._current_path:
+            self._status_label.setText(t("就绪", "Ready"))
         self.setWindowTitle("audio-analyzer")
 
     def closeEvent(self, event) -> None:

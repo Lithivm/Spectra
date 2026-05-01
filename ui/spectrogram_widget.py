@@ -12,11 +12,15 @@ import time
 import ctypes
 
 import numpy as np
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QBrush, QPainterPath, QImage
-from PyQt6.QtCore import Qt, QRectF, QPointF
+from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal, QObject
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
+
+# ── Progress pipeline phases ────────────────────────────────────────
+
+ProgressPhase = str  # "decoded" | "stft_done" | "render_done"
 
 from lang import t
 from ui.styles import BORDER_MID, TEXT_DIM
@@ -709,6 +713,221 @@ class SpectrogramWidget(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Axis / colorbar widgets — painted alongside the GL spectrogram
+# ══════════════════════════════════════════════════════════════════════
+
+class _YAxisWidget(QWidget):
+    """Frequency axis (left). Paints labels + short tick marks."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._freqs: np.ndarray | None = None
+        self._yscale_mode = "linear"
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def set_data(self, freqs, yscale_mode: str = "linear") -> None:
+        self._freqs = np.asarray(freqs) if freqs is not None else None
+        self._yscale_mode = yscale_mode
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        if self._freqs is None or len(self._freqs) == 0:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        pad_top, pad_bot = 10, 10
+        h_eff = h - pad_top - pad_bot
+
+        font = QFont("Segoe UI, sans-serif", 7)
+        painter.setFont(font)
+
+        nyquist = float(self._freqs[-1])
+        _ALL_TICKS = [
+            0, 20, 50, 100, 200, 500, 1000, 2000, 5000,
+            10000, 16000, 20000, 22050, 24000, 32000,
+            40000, 44100, 48000, 64000, 80000, 88200, 96000,
+        ]
+        candidates = [t for t in _ALL_TICKS if t == 0 or t <= nyquist * 1.01]
+        MAX_TICKS = 11
+        if len(candidates) <= MAX_TICKS:
+            visible_ticks = candidates
+        else:
+            inner = candidates[1:-1]
+            n_inner = MAX_TICKS - 2
+            step = len(inner) / n_inner
+            sampled = [inner[min(int(i * step), len(inner) - 1)] for i in range(n_inner)]
+            visible_ticks = [candidates[0]] + sampled + [candidates[-1]]
+
+        f_min = max(float(self._freqs[0]), 1.0)
+        f_max = float(self._freqs[-1])
+
+        last_y = None
+        for tick in visible_ticks:
+            if tick > nyquist * 1.02:
+                continue
+
+            if self._yscale_mode == "log":
+                frac = 0.0 if tick == 0 else (
+                    (np.log10(max(tick, 1.0)) - np.log10(f_min)) /
+                    (np.log10(f_max) - np.log10(f_min))
+                )
+            elif self._yscale_mode == "mel":
+                import librosa
+                m_tick = librosa.hz_to_mel(max(tick, 1.0))
+                m_min = librosa.hz_to_mel(f_min)
+                m_max = librosa.hz_to_mel(f_max)
+                frac = 0.0 if tick == 0 else (m_tick - m_min) / (m_max - m_min)
+            else:
+                frac = (tick - f_min) / (f_max - f_min) if f_max > f_min else 0.5
+
+            frac = max(0.0, min(1.0, frac))
+            y = int(pad_top + h_eff - frac * h_eff)
+
+            if last_y is not None and abs(y - last_y) < 15:
+                continue
+            last_y = y
+
+            # Tick mark (right edge, shorter)
+            painter.setPen(QColor(150, 145, 140))
+            painter.drawLine(QPointF(w - 4, y), QPointF(w, y))
+
+            # Label
+            if tick == 0:
+                label = "0"
+            elif tick >= 1000:
+                label = f"{tick / 1000:.0f}k" if tick % 1000 == 0 else f"{tick / 1000:.1f}k"
+            else:
+                label = f"{tick}"
+            painter.setPen(QColor(170, 166, 161))
+            painter.drawText(
+                QRectF(1, y - 9, w - 7, 18),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                label,
+            )
+
+        painter.end()
+
+
+class _XAxisWidget(QWidget):
+    """Time axis (bottom). Paints labels + short tick marks."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._duration = 0.0
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def set_data(self, duration: float) -> None:
+        self._duration = duration
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        if self._duration <= 0:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        SIDE = 36
+        l, r = SIDE, w - SIDE
+        rw = r - l
+        if rw <= 0:
+            return
+
+        font = QFont("Segoe UI, sans-serif", 8)
+        painter.setFont(font)
+
+        num_ticks = min(8, max(4, rw // 80))
+        for i in range(num_ticks):
+            t = (i / (num_ticks - 1)) * self._duration if num_ticks > 1 else 0
+            x = l + int((i / (num_ticks - 1)) * rw) if num_ticks > 1 else l
+
+            # Tick mark (top edge)
+            painter.setPen(QColor(150, 145, 140))
+            painter.drawLine(QPointF(x, 0), QPointF(x, 5))
+
+            # Label
+            if t < 1:
+                label = f"{t * 1000:.0f}ms"
+            elif t < 60:
+                label = f"{t:.1f}s"
+            else:
+                label = f"{t / 60:.1f}min"
+            painter.setPen(QColor(170, 166, 161))
+            painter.drawText(
+                QRectF(x - 35, 5, 70, h - 5),
+                Qt.AlignmentFlag.AlignCenter, label,
+            )
+
+        painter.end()
+
+
+class _ColorBarWidget(QWidget):
+    """dB colorbar (right). Paints gradient + tick marks + dB labels."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._lut: np.ndarray = np.zeros((256, 4), dtype=np.uint8)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def set_data(self, lut_np: np.ndarray) -> None:
+        self._lut = np.ascontiguousarray(lut_np[:, :4]) if lut_np is not None else np.zeros((256, 4), dtype=np.uint8)
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        # Colorbar spans all 3 grid rows — align gradient to spectrogram
+        # with 5 px protrusion above / below
+        SIDE = 36
+        PROTRUDE = 5
+        pad_top = SIDE - PROTRUDE
+        pad_bot = SIDE - PROTRUDE
+        h_eff = h - pad_top - pad_bot
+        if h_eff <= 0:
+            painter.end()
+            return
+
+        bar_x = 2
+        bar_w = 5
+        lut = self._lut
+        n_lut = len(lut)
+
+        # Gradient bar
+        for py in range(h_eff):
+            idx = int((h_eff - 1 - py) / max(h_eff - 1, 1) * (n_lut - 1))
+            idx = max(0, min(n_lut - 1, idx))
+            r, g, b, a = int(lut[idx][0]), int(lut[idx][1]), int(lut[idx][2]), int(lut[idx][3])
+            painter.fillRect(bar_x, pad_top + py, bar_w, 2, QColor(r, g, b, a))
+
+        # Border
+        painter.setPen(QColor(85, 83, 79))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(bar_x, pad_top, bar_w, h_eff)
+
+        # dB ticks
+        font = QFont("Segoe UI, sans-serif", 7)
+        painter.setFont(font)
+        DB_MIN_V = -90.0
+        DB_MAX_V = 0.0
+        db_ticks = [0, -20, -40, -60, -80]
+
+        for db_val in db_ticks:
+            frac = (db_val - DB_MAX_V) / (DB_MIN_V - DB_MAX_V)
+            y = int(pad_top + frac * h_eff)
+            painter.setPen(QColor(150, 145, 140))
+            painter.drawLine(QPointF(bar_x + bar_w, y), QPointF(bar_x + bar_w + 3, y))
+            painter.setPen(QColor(170, 166, 161))
+            painter.drawText(
+                QRectF(bar_x + bar_w + 4, y - 7, w - bar_x - bar_w - 4, 14),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                f"{db_val}",
+            )
+
+        painter.end()
+
+
+# ══════════════════════════════════════════════════════════════════════
 # SpectrogramGLWidget — GPU-accelerated spectrogram via QOpenGLWidget
 # ══════════════════════════════════════════════════════════════════════
 
@@ -738,6 +957,9 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._needs_upload = False
         self.frequencies = None
         self.duration = 0.0
+
+        # ── Loading overlay ────────────────────────────────────────
+        self._progress_visible = False
 
         self._rebuild_lut()
 
@@ -784,6 +1006,45 @@ class SpectrogramGLWidget(QOpenGLWidget):
         return None
 
     # ── LUT ─────────────────────────────────────────────────────────
+
+    # ── Progress bar ────────────────────────────────────────────────────
+
+    def show_progress(self, _pct: float = 0.0) -> None:
+        """Show the loading overlay."""
+        self._progress_visible = True
+        self.repaint()
+
+    def hide_progress(self) -> None:
+        """Hide the loading overlay."""
+        self._progress_visible = False
+        self.update()
+
+    def _paint_progress_overlay(self, painter: QPainter) -> None:
+        if not self._progress_visible:
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w, h = self.width(), self.height()
+        cx, cy = w / 2.0, h / 2.0
+
+        # Semi-transparent backdrop
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 120))
+        painter.drawRoundedRect(QRectF(cx - 60, cy - 16, 120, 32), 8, 8)
+
+        # Text label
+        font = QFont("Segoe UI, sans-serif", 12)
+        font.setWeight(QFont.Weight.Medium)
+        painter.setFont(font)
+        painter.setPen(QColor(210, 207, 202))
+        painter.drawText(
+            QRectF(cx - 60, cy - 16, 120, 32),
+            Qt.AlignmentFlag.AlignCenter,
+            t("加载中…", "Loading…"),
+        )
+
+        painter.restore()
 
     def _rebuild_lut(self) -> None:
         lut_np = build_lut_np(self._palette_name)
@@ -881,45 +1142,35 @@ class SpectrogramGLWidget(QOpenGLWidget):
             self._upload_texture()
 
     def paintEvent(self, event) -> None:
-        # GL rendering via QOpenGLWidget's built-in path
         super().paintEvent(event)
-        # 2-D overlay on top of the GL content
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        rect = QRectF(0, 0, w, h)
-        clip_path = QPainterPath()
-        clip_path.addRoundedRect(rect, 10, 10)
-        painter.setClipPath(clip_path)
-        if self._data is not None:
-            ml, mr, mt, mb = 62, 46, 6, 26
-            rw = int(rect.width()) - ml - mr
-            rh = int(rect.height()) - mt - mb
-            if rw > 0 and rh > 0:
-                self._draw_axes_overlay(painter, ml, mr, mt, mb, rw, rh)
-                # self._draw_colorbar_overlay(painter, ml, mr, mt, mb, rw, rh)
-        painter.end()
+        if self._progress_visible:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self._paint_progress_overlay(painter)
+            painter.end()
 
     def resizeGL(self, w: int, h: int) -> None:
+        print(f"[GL] resizeGL called")
         glViewport(0, 0, w, h)
 
     def paintGL(self) -> None:
+        print(f"[GL] paintGL called")
         if self._needs_upload and self._data is not None:
             self._upload_texture()
             self._needs_upload = False
 
-        # Inset margins for axes + colorbar
-        ml, mr, mt, mb = 62, 46, 6, 26
+        # Minimal inset — axes are now separate widgets
+        ml, mr, mt, mb = 2, 2, 2, 2
         w = int(self.width() * self.devicePixelRatio())
         h = int(self.height() * self.devicePixelRatio())
         rw = max(w - ml - mr, 1)
         rh = max(h - mt - mb, 1)
 
         glViewport(0, 0, w, h)
+        glDisable(GL_SCISSOR_TEST)
+        glClear(GL_COLOR_BUFFER_BIT)
         glEnable(GL_SCISSOR_TEST)
         glScissor(ml, mb, rw, rh)
-
-        glClear(GL_COLOR_BUFFER_BIT)
         if self._data is None:
             glDisable(GL_SCISSOR_TEST)
             return
@@ -944,40 +1195,6 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
         glUseProgram(0)
         glDisable(GL_SCISSOR_TEST)
-
-        glUseProgram(self._gl_program)
-
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, self._tex_id)
-        glUniform1i(self._u_spec, 0)
-
-        glActiveTexture(GL_TEXTURE1)
-        glBindTexture(GL_TEXTURE_2D, self._lut_tex_id)
-        glUniform1i(self._u_colormap, 1)
-
-        glUniform1f(self._u_vmin, self._vmin)
-        glUniform1f(self._u_vmax, self._vmax)
-        glUniform1i(self._u_log_scale, 1 if self._yscale_mode == "log" else 0)
-
-        glBindVertexArray(self._vao)
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
-        glBindVertexArray(0)
-
-        glUseProgram(0)
-
-    # ── 2-D overlay (axes + colorbar) ────────────────────────────────
-
-    def _draw_axes_overlay(
-        self, painter: QPainter, ml: int, mr: int,
-        mt: int, mb: int, rw: int, rh: int,
-    ) -> None:
-        pass
-
-    def _draw_colorbar_overlay(
-        self, painter: QPainter, ml: int, mr: int,
-        mt: int, mb: int, rw: int, rh: int,
-    ) -> None:
-        pass
 
     # ── Texture upload ──────────────────────────────────────────────
 

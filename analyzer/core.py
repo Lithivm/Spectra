@@ -17,6 +17,17 @@ import numpy as np
 librosa.set_fftlib(fftw_scipy)
 
 from lang import t
+
+_TAG_TR = {
+    "标题": ("标题", "Title"),
+    "艺术家": ("艺术家", "Artist"),
+    "专辑": ("专辑", "Album"),
+    "年份": ("年份", "Year"),
+    "流派": ("流派", "Genre"),
+    "音轨": ("音轨", "Track"),
+    "碟片": ("碟片", "Disc"),
+    "作曲": ("作曲", "Composer"),
+}
 from .load import load_audio
 from .metadata import get_metadata
 
@@ -369,7 +380,8 @@ class AudioAnalyzer:
         if self.metadata:
             for k in ("标题", "艺术家", "专辑", "年份", "流派"):
                 if self.metadata.get(k):
-                    info[t(k, k)] = self.metadata[k]
+                    zh, en = _TAG_TR.get(k, (k, k))
+                    info[t(zh, en)] = self.metadata[k]
         return info
 
     # ------------------------------------------------------------------

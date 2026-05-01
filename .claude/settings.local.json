@@ -67,7 +67,12 @@
       "Bash(python -c ' *)",
       "Bash(python -c \"from ui.main_window import MainWindow; MainWindow\\(\\)\")",
       "Bash(python -c \"from ui.main_window import MainWindow; w = MainWindow\\(\\); w.show\\(\\); w.close\\(\\)\")",
-      "Bash(python -m py_compile ui/main_window.py)"
+      "Bash(python -m py_compile ui/main_window.py)",
+      "Bash(dir D:\\\\Claude code\\\\audio-analyzer *)",
+      "Bash(Get-ChildItem *)",
+      "Bash(dir \"D:\\\\Claude code\\\\audio-analyzer\\\\ui\")",
+      "Bash(python *)",
+      "WebSearch"
     ]
   }
 }

@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from analyzer.core import AudioAnalyzer
+from analyzer.core import AudioAnalyzer, _TAG_TR
 from lang import t, on_lang_change
 from ui.styles import (
     BG_BASE, BG_SURFACE, BG_RAISED,
@@ -110,8 +110,8 @@ class _AnalysisRow(QWidget):
             color = ACCENT_AMB
         else:
             color = ACCENT_RED
-        dot.setStyleSheet(f"color: {color}; font-size: 8px; background: transparent; border: none;")
-        dot.setFixedWidth(12)
+        dot.setStyleSheet(f"color: {color}; font-size: 12px; background: transparent; border: none;")
+        dot.setFixedWidth(16)
         layout.addWidget(dot)
 
         k = QLabel(key)
@@ -127,7 +127,7 @@ class _AnalysisRow(QWidget):
 
         v = QLabel(value)
         v.setStyleSheet(f"""
-            color: {ACCENT_GRN if ok else (ACCENT_AMB if warn else ACCENT_RED)};
+            color: {TEXT_PRI if ok else (ACCENT_AMB if warn else ACCENT_RED)};
             font-size: 11px;
             font-family: 'Consolas', monospace;
             background: transparent;
@@ -140,6 +140,8 @@ class _AnalysisRow(QWidget):
 class MetadataPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._stored_analyzer: AudioAnalyzer | None = None
+        self._stored_qa: dict | None = None
         self.setStyleSheet(f"""
             QWidget {{
                 background-color: {BG_SURFACE};
@@ -147,7 +149,6 @@ class MetadataPanel(QWidget):
                 border-radius: 12px;
             }}
         """)
-
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -175,8 +176,8 @@ class MetadataPanel(QWidget):
         hl.addWidget(self._header_title)
         hl.addStretch()
 
-        self._indicator = QLabel("○")
-        self._indicator.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px; background: transparent; border: none;")
+        self._indicator = QLabel("●")
+        self._indicator.setStyleSheet(f"color: {TEXT_DIM}; font-size: 20px; background: transparent; border: none;")
         hl.addWidget(self._indicator)
         outer.addWidget(header)
 
@@ -233,11 +234,13 @@ class MetadataPanel(QWidget):
                 item.widget().deleteLater()
         self._empty_label = None
         self._analysis_placeholder = None
-        self._indicator.setText("○")
-        self._indicator.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px; background: transparent; border: none;")
+        self._indicator.setText("●")
+        self._indicator.setStyleSheet(f"color: {TEXT_DIM}; font-size: 20px; background: transparent; border: none;")
 
     def load_metadata(self, analyzer: AudioAnalyzer) -> None:
         self.clear()
+        self._stored_analyzer = analyzer
+        self._stored_qa = None
         self._qa_analyzer = analyzer  # keep for later background analysis
 
         # TECHNICAL
@@ -261,7 +264,8 @@ class MetadataPanel(QWidget):
             for k, v in analyzer.metadata.items():
                 if k in skip:
                     continue
-                self._content_layout.addWidget(_Row(k, str(v)))
+                zh, en = _TAG_TR.get(k, (k, k))
+                self._content_layout.addWidget(_Row(t(zh, en), str(v)))
 
         # ANALYSIS — placeholder, filled by load_analysis()
         self._content_layout.addWidget(_section_label(t("分析", "ANALYSIS")))
@@ -277,10 +281,11 @@ class MetadataPanel(QWidget):
 
         self._indicator.setText("●")
         self._indicator.setStyleSheet(
-            f"color: {ACCENT_GRN}; font-size: 10px; background: transparent; border: none;")
+            f"color: {ACCENT_GRN}; font-size: 20px; background: transparent; border: none;")
 
     def load_analysis(self, qa: dict | None) -> None:
         """Fill the ANALYSIS section — called from background thread result."""
+        self._stored_qa = qa
         if not hasattr(self, '_analysis_placeholder') or self._analysis_placeholder is None:
             return
         # Remove placeholder
@@ -333,7 +338,11 @@ class MetadataPanel(QWidget):
 
     def _retranslate(self, _lang: str | None = None) -> None:
         self._header_title.setText(t("文件信息", "File Info"))
-        if hasattr(self, '_empty_label') and self._empty_label:
+        if self._stored_analyzer:
+            saved_qa = self._stored_qa
+            self.load_metadata(self._stored_analyzer)
+            self._stored_qa = saved_qa
+            if saved_qa is not None:
+                self.load_analysis(saved_qa)
+        elif hasattr(self, '_empty_label') and self._empty_label:
             self._empty_label.setText(t("拖入文件\n进行分析", "Drop a file\nto analyze"))
-        if hasattr(self, '_analysis_placeholder') and self._analysis_placeholder:
-            self._analysis_placeholder.setText(t("正在分析…", "Analyzing…"))
