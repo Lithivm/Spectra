@@ -390,6 +390,9 @@ class MainWindow(QMainWindow):
         self._spec.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         _grid.addWidget(self._spec, 1, 1)
 
+        self._cutoff_btn.setChecked(True)
+        self._cutoff_btn.toggled.connect(self._on_cutoff_toggled)
+
         self._colorbar = _ColorBarWidget()
         self._colorbar.setFixedWidth(SIDE)
         _grid.addWidget(self._colorbar, 0, 2, 3, 1)
@@ -519,21 +522,14 @@ class MainWindow(QMainWindow):
 
         # language toggle
         self._lang_btn = QPushButton("中/EN")
-        self._lang_btn.setFixedHeight(39)
-        self._lang_btn.setFixedWidth(62)
+        self._lang_btn.setFixedHeight(30)
+        self._lang_btn.setMinimumWidth(60)
         self._lang_btn.clicked.connect(self._on_toggle_lang)
         layout.addWidget(self._lang_btn)
-
-        self._batch_btn = QPushButton(t("批量", "Batch"))
-        self._batch_btn.setFixedHeight(30)
-        self._batch_btn.clicked.connect(self._on_batch_export)
-        layout.addWidget(self._batch_btn)
 
         self._cutoff_btn = QPushButton(t("截止线", "Cutoff"))
         self._cutoff_btn.setCheckable(True)
         self._cutoff_btn.setFixedHeight(30)
-        self._cutoff_btn.setChecked(True)
-        self._cutoff_btn.toggled.connect(self._on_cutoff_toggled)
         layout.addWidget(self._cutoff_btn)
 
         return card
@@ -573,15 +569,16 @@ class MainWindow(QMainWindow):
 
     def _on_open_file(self) -> None:
         formats = ["*.wav", "*.mp3", "*.flac", "*.m4a", "*.ogg", "*.aac", "*.aiff", "*.opus", "*.ape"]
-        path_str, _ = QFileDialog.getOpenFileName(
-            self, t("打开音频文件", "Open Audio File"), str(Path.home()),
+        path_list, _ = QFileDialog.getOpenFileNames(
+            self, t("选择音频文件（可多选）", "Select Audio File(s)"), str(Path.home()),
             "Audio Files (" + " ".join(formats) + ")"
         )
-        if path_str:
-            self._load_file(Path(path_str))
+        if len(path_list) == 1:
+            self._load_file(Path(path_list[0]))
+        elif len(path_list) > 1:
+            self._start_batch_analysis([Path(p) for p in path_list])
 
     def _on_spectrum_done(self, freqs: Any, times: Any, db: Any, mode: str = "multi") -> None:
-        print(f"[TIMER] 频谱计算完成, 文件 {self._current_path.name}, mode={mode}")
         t_set = time.perf_counter()
         self._spec.set_audio({
             'spectrogram': db,
@@ -593,10 +590,10 @@ class MainWindow(QMainWindow):
             'mode': mode,
         })
         self._spec.hide_progress()
+        self._cancel_quality()
         self._y_axis.set_data(freqs, self._spec._yscale_mode)
         self._x_axis.set_data(self._analyzer.duration)
         self._colorbar.set_data(self._spec._lut_np)
-        print(f"[PROFILE] _on_spectrum_done (set_audio + processEvents): {time.perf_counter() - t_set:.3f}s")
         QCoreApplication.processEvents()
 
     def _load_file(self, path: Path) -> None:
@@ -631,11 +628,11 @@ class MainWindow(QMainWindow):
             self._filename_widget.setText(path.name)
             self._spectrum_worker = _SpectrumWorker(self._analyzer, self._fft_size, self._mode)
             self._spectrum_worker.finished.connect(self._on_spectrum_done)
-            self._spectrum_worker.fading.connect(self._spec.hide_progress)
+            self._spectrum_worker.fading.connect(lambda: self._spec.hide_progress())
             self._spectrum_worker.start()
         except Exception:
-            print(f"\n[LOAD ERROR] {path}\n")
             traceback.print_exc(file=sys.stderr)
+            self._spec.hide_progress()
             QMessageBox.critical(self, t("错误", "Error"), t(f"无法加载:\n{path.name}", f"Cannot load:\n{path.name}"))
 
     def _cancel_spectrum(self) -> None:
@@ -659,10 +656,19 @@ class MainWindow(QMainWindow):
     def _on_cutoff_toggled(self, checked: bool) -> None:
         if self._spec:
             self._spec.toggle_cutoff(checked)
+            cutoff = self._spec.cutoff_frequency()
+            if cutoff is not None and cutoff > 0:
+                self._status_label.setText(
+                    f"{t('截止线', 'Cutoff')}: {cutoff/1000:.1f} kHz — "
+                    f"{t('开' if checked else '关', 'ON' if checked else 'OFF')}")
+            else:
+                self._status_label.setText(
+                    t("截止线: 未检测到高频截止", "Cutoff: no high-freq cutoff detected"))
 
     def _on_quality_done(self, qa: Any) -> None:
         self._meta.load_analysis(qa)
         self._quality_worker = None
+        self._spec.hide_progress()
         if qa and self._spec:
             ups = qa.get("upsampling", {})
             if not ups.get("ok", True):
@@ -683,15 +689,6 @@ class MainWindow(QMainWindow):
             if img:
                 img.save(path_str, "PNG")
             self._status_label.setText(f"{t('已保存', 'Saved')}  {path_str}")
-
-    def _on_batch_export(self) -> None:
-        formats = ["*.wav", "*.mp3", "*.flac", "*.m4a", "*.ogg", "*.aac", "*.opus", "*.ape"]
-        path_list, _ = QFileDialog.getOpenFileNames(
-            self, t("选择多个音频文件", "Select Audio Files"), str(Path.home()),
-            "Audio Files (" + " ".join(formats) + ")"
-        )
-        if path_list:
-            self._start_batch_analysis([Path(p) for p in path_list])
 
     def _start_batch_analysis(self, files: list[Path]) -> None:
         from ui.batch_dialog import BatchProgressDialog

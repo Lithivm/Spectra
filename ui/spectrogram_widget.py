@@ -474,6 +474,9 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._show_cutoff = show
         self.update()
 
+    def cutoff_frequency(self) -> float | None:
+        return self._cutoff_hz
+
     # ── LUT ─────────────────────────────────────────────────────────
 
     # ── Progress bar ────────────────────────────────────────────────────
