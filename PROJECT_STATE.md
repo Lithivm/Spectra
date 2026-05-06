@@ -1,4 +1,4 @@
-# audio-analyzer
+# Spectra
 
 ## 当前功能
 - 项目骨架已创建（目录、`requirements.txt`、`pyproject.toml`）
@@ -9,12 +9,12 @@
 - **质量分析**（2026-04-28） — `analyze_quality()` 返回削波/疑似升频/动态范围三项指标
 - UI — 主窗口 + 拖放 + 元数据面板 + 频谱面板
 - 入口 — `main.py`
-- 打包 — `audio-analyzer.spec`
+- 打包 — `spectra.spec`
 
 ## 文件结构
 
 ```
-audio-analyzer/
+spectra/
 ├── main.py                     # ✅ 已创建 — 入口
 ├── pyproject.toml              # ✅ 已创建 — 项目元数据
 ├── requirements.txt            # ✅ 已创建 — 依赖列表
@@ -29,7 +29,7 @@ audio-analyzer/
 │   ├── metadata_panel.py       # ✅ 已创建 — 元数据标签面板
 │   ├── waveform_widget.py      # ✅ 已创建 — 波形绘制
 │   └── spectrogram_widget.py   # ✅ 已创建 — 频谱图面板
-└── audio-analyzer.spec         # ✅ 已创建 — PyInstaller 打包配置
+└── spectra.spec         # ✅ 已创建 — PyInstaller 打包配置
 ```
 
 ## TODO
@@ -44,7 +44,7 @@ audio-analyzer/
 - [x] `ui/spectrogram_widget.py` — 频谱图面板
 - [x] `ui/main_window.py` — 主窗口 + 拖放 + 布局
 - [x] `main.py` — 入口
-- [x] `audio-analyzer.spec` — PyInstaller 打包配置
+- [x] `spectra.spec` — PyInstaller 打包配置
 - [x] **音频质量分析** — 削波检测/疑似升频/动态范围（numpy/scipy，无新依赖）
 
 ### 音频质量分析实现 (2026-04-28)
@@ -106,7 +106,7 @@ audio-analyzer/
 ## 下一步入口
 1. 安装: `pip install PyQt6 mutagen librosa numpy scipy matplotlib soundfile`
 2. 运行: `python main.py`
-3. 打包: `pyinstaller --clean audio-analyzer.spec`
+3. 打包: `pyinstaller --clean spectra.spec`
 4. 验证质量分析: 打开音频文件，观察元数据面板底部新增的 "ANALYSIS" section
 
 ## 修复记录 (2026-04-28)

@@ -1,9 +1,11 @@
-"""Audio Analyzer entry point."""
+"""Spectra entry point."""
 
+import os
 import sys
 import traceback
 from pathlib import Path
 
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
 from ui.main_window import MainWindow
@@ -14,6 +16,8 @@ def main() -> None:
     try:
         app = QApplication.instance() or QApplication([])
         print("[main.py] QApplication created OK")
+        icon_path = os.path.join(getattr(sys, "_MEIPASS", "."), "assets", "logo.png")
+        app.setWindowIcon(QIcon(icon_path))
         app.setStyle("Fusion")
         print("[main.py] Creating MainWindow()...")
         window = MainWindow()

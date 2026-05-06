@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import matplotlib
-matplotlib.use("Qt5Agg")
+matplotlib.use("QtAgg")
 
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm

@@ -20,23 +20,16 @@ class WaveformWidget(QWidget):
         self.audio = None
         self.samples = None
         self.duration = 0.0
-        self._envelope_cache: list[float] | None = None
+        self._envelope_cache: np.ndarray | None = None
         on_lang_change(lambda _lang: self.update() if not self.audio else None)
 
-    def _build_envelope(self, channel_samples) -> list[float]:
-        """Pre-compute fixed-size envelope from raw samples (called once)."""
+    def _build_envelope(self, channel_samples: np.ndarray) -> np.ndarray:
         n = len(channel_samples)
         if n <= _ENVELOPE_SIZE:
-            return [abs(float(s)) for s in channel_samples]
-        step = n / _ENVELOPE_SIZE
-        envelope = []
-        for i in range(_ENVELOPE_SIZE):
-            start = int(i * step)
-            end = int((i + 1) * step)
-            chunk = channel_samples[start:end]
-            if len(chunk) > 0:
-                envelope.append(float(max(abs(s) for s in chunk)))
-        return envelope
+            return np.abs(channel_samples)
+        chunk_size = n // _ENVELOPE_SIZE
+        trimmed = channel_samples[:chunk_size * _ENVELOPE_SIZE]
+        return np.max(np.abs(trimmed.reshape(_ENVELOPE_SIZE, chunk_size)), axis=1)
 
     def set_audio(self, data):
         self.audio = data
@@ -69,7 +62,7 @@ class WaveformWidget(QWidget):
 
     def _draw_waveform(self, painter, rect):
         envelope = self._envelope_cache
-        if not envelope:
+        if envelope is None or len(envelope) == 0:
             return
 
         rw = int(rect.width())

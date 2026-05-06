@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import time
 import warnings
 from pathlib import Path
@@ -10,6 +11,30 @@ import pyfftw
 import pyfftw.interfaces.scipy_fft as fftw_scipy
 pyfftw.interfaces.cache.enable()
 pyfftw.config.NUM_THREADS = os.cpu_count() or 4
+
+_wisdom_path = os.path.join(os.path.expanduser('~'), '.spectra', 'fftw_wisdom.pkl')
+os.makedirs(os.path.dirname(_wisdom_path), exist_ok=True)
+
+_wisdom_loaded = False
+try:
+    import pickle
+    if os.path.exists(_wisdom_path):
+        with open(_wisdom_path, "rb") as f:
+            pyfftw.import_wisdom(pickle.load(f))
+        _wisdom_loaded = True
+except Exception:
+    pass
+
+if not _wisdom_loaded:
+    try:
+        _bundled = os.path.join(sys._MEIPASS, 'analyzer', 'fftw_wisdom.pkl')
+        if os.path.exists(_bundled):
+            with open(_bundled, "rb") as f:
+                pyfftw.import_wisdom(pickle.load(f))
+            import shutil
+            shutil.copy2(_bundled, _wisdom_path)
+    except Exception:
+        pass
 
 import librosa
 import numpy as np
@@ -100,6 +125,8 @@ class AudioAnalyzer:
             np.arange(S.shape[1]), sr=self.sample_rate, hop_length=hop)
         return freqs, times, S
 
+    TARGET_FRAMES = 16384
+
     def spectrogram_db(
         self,
         n_fft: int = 2048,
@@ -118,43 +145,56 @@ class AudioAnalyzer:
             "reassign" — phase-reassigned spectrogram for sharper harmonics.
         """
         print(f"[FFT backend] {librosa.get_fftlib()}")
-        # Check cache — keyed by (filepath, mode, n_fft), single-entry
         if self.filepath and self.filepath.exists():
             cache_key = (str(self.filepath), mode, n_fft)
             if cache_key in _stft_cache:
                 print(f"[PROFILE] STFT cache hit ({mode}, n_fft={n_fft})")
                 return _stft_cache[cache_key]
 
+        # ── Adaptive hop: aim for TARGET_FRAMES directly, skip downsampling ──
+        if hop_length is None:
+            if self.duration > 0:
+                target_hop = int(self.duration * self.sample_rate / self.TARGET_FRAMES)
+                hop = max(n_fft // 8, min(n_fft, target_hop))
+            else:
+                hop = n_fft // 4
+        else:
+            hop = hop_length
+
         t0 = time.perf_counter()
         if mode == "multi":
             result = self._multi_resolution_stft(window)
         elif mode == "reassign":
-            result = self._reassigned_spectrogram(n_fft, hop_length, win_length, window)
+            result = self._reassigned_spectrogram(n_fft, hop, win_length, window)
         else:
-            freqs, times, S = self.stft(n_fft, hop_length, win_length, window)
+            freqs, times, S = self.stft(n_fft, hop, win_length, window)
             result = (freqs, times, librosa.amplitude_to_db(np.abs(S), ref=np.max))
 
-        print(f"[TIMER] 计算结果: {time.perf_counter()-t0:.2f}s")
+        print(f"[TIMER] STFT ({mode}, n_fft={n_fft}, hop={hop}): {time.perf_counter()-t0:.2f}s")
 
-        # ── Downsample time axis ──
-        TARGET_FRAMES = 16384
+        # ── Downsample time axis (only if adaptive hop overshot target) ──
         freqs, times, db = result
-        if db.shape[1] > TARGET_FRAMES:
-            chunk = db.shape[1] // TARGET_FRAMES
-            db = db[:, :chunk * TARGET_FRAMES].reshape(
-                db.shape[0], TARGET_FRAMES, chunk
+        if db.shape[1] > self.TARGET_FRAMES:
+            t1 = time.perf_counter()
+            chunk = db.shape[1] // self.TARGET_FRAMES
+            db = db[:, :chunk * self.TARGET_FRAMES].reshape(
+                db.shape[0], self.TARGET_FRAMES, chunk
             ).max(axis=2)
-            times = times[:chunk * TARGET_FRAMES].reshape(
-                TARGET_FRAMES, chunk
+            times = times[:chunk * self.TARGET_FRAMES].reshape(
+                self.TARGET_FRAMES, chunk
             ).mean(axis=1)
             result = (freqs, times.astype(np.float64), db)
-
-        print(f"[TIMER] 降采样: {time.perf_counter()-t0:.2f}s")
-        print(f"[TIMER] 降采样后: {time.perf_counter()-t0:.2f}s")
+            print(f"[TIMER] 降采样: {time.perf_counter()-t1:.3f}s")
 
         if self.filepath:
             _stft_cache.clear()
             _stft_cache[(str(self.filepath), mode, n_fft)] = result
+
+        try:
+            with open(_wisdom_path, "wb") as f:
+                pickle.dump(pyfftw.export_wisdom(), f)
+        except Exception:
+            pass
 
         return result
 

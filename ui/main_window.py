@@ -26,12 +26,12 @@ from analyzer.core import AudioAnalyzer
 from analyzer.spectrogram import PALETTE
 from analyzer import is_audio_file, SUPPORTED_EXTENSIONS
 from ui.metadata_panel import MetadataPanel
-from ui.spectrogram_widget import SpectrogramWidget, SpectrogramGLWidget, _YAxisWidget, _XAxisWidget, _ColorBarWidget
+from ui.spectrogram_widget import SpectrogramGLWidget, _YAxisWidget, _XAxisWidget, _ColorBarWidget
 from ui.waveform_widget import WaveformWidget
 from ui.styles import (
     BG_BASE, BG_SURFACE, BG_RAISED,
     BORDER_SUB, BORDER_MID,
-    ACCENT, ACCENT_ALT, ACCENT2,
+    ACCENT, ACCENT_ALT,
     TEXT_PRI, TEXT_SEC, TEXT_DIM,
 )
 from lang import t, toggle_lang, on_lang_change
@@ -270,7 +270,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setAcceptDrops(True)
-        self._title = "audio-analyzer"
+        self._title = "Spectra"
         self._current_path: Path | None = None
         self._spectrum_worker: _SpectrumWorker | None = None
         self._quality_worker: _QualityWorker | None = None
@@ -389,7 +389,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(12)
 
-        self._brand_label = QLabel("audio-analyzer")
+        self._brand_label = QLabel("Spectra")
         self._brand_label.setStyleSheet(f"""
             color: {TEXT_PRI};
             font-size: 15px;
@@ -579,7 +579,7 @@ class MainWindow(QMainWindow):
             })
             print(f"[TIMER] 波形渲染: {time.perf_counter()-t0:.2f}s")
             self._current_path = path
-            self.setWindowTitle(f"audio-analyzer  —  {path.name}")
+            self.setWindowTitle(f"Spectra  —  {path.name}")
             self._status_label.setText(
                 f"{path.name}  ·  {self._analyzer.sample_rate/1000:.1f} kHz  ·  "
                 f"{int(self._analyzer.duration)//60}m{int(self._analyzer.duration)%60}s"
@@ -650,7 +650,7 @@ class MainWindow(QMainWindow):
         self._lang_btn.setText("EN" if LANG == "zh" else "中")
 
     def _retranslate(self, _lang: str | None = None) -> None:
-        self._brand_label.setText("audio-analyzer")
+        self._brand_label.setText("Spectra")
         self._open_btn.setText(t("打开文件", "Open File"))
         self._save_btn.setText(t("保存PNG", "Save PNG"))
         self._pal_label.setText(t("调色板", "Palette"))
@@ -658,7 +658,7 @@ class MainWindow(QMainWindow):
         self._yscale_label.setText(t("刻度", "Scale"))
         if not self._current_path:
             self._status_label.setText(t("就绪", "Ready"))
-        self.setWindowTitle("audio-analyzer")
+        self.setWindowTitle("Spectra")
 
     def closeEvent(self, event) -> None:
         self._cancel_spectrum()
