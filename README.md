@@ -1,12 +1,8 @@
 # Spectra
 A modern spectrogram analyzer for music enthusiasts and HiFi listeners
+一个面向音乐爱好者与 HiFi 发烧友的现代化频谱分析仪
 # Spectra
 ![screenshot](demo.png)
-
-A GPU-accelerated audio spectrogram analyzer with a Claude-inspired dark UI.
-Drag in a file, see its spectrum, waveform, and quality diagnostics instantly.
-
-GPU 加速的音频频谱分析器，Claude 风格深色界面。拖入文件即可查看频谱、波形和质量诊断。
 
 ## Features · 功能
 
@@ -15,7 +11,7 @@ GPU 加速的音频频谱分析器，Claude 风格深色界面。拖入文件即
 - **Multi-resolution STFT** — standard, multi-band, and phase-reassigned modes
 - **Flexible Y-axis** — linear, logarithmic, mel, and bark scales
 - **Waveform preview** — down-sampled envelope with mirrored fill
-- **Drag & drop** — WAV, FLAC, MP3, M4A, OGG, AAC, OPUS, APE, DSD, and more
+- **Drag & drop** — WAV, FLAC, MP3, M4A, OGG, AAC, OPUS, APE, 和 more
 - **Colormap-synced colorbar** — dB scale gradient that tracks the active palette
 - **Bilingual UI** — Chinese / English toggle in the toolbar
 - **Screenshot export** — save the current spectrogram view as PNG
@@ -25,7 +21,7 @@ GPU 加速的音频频谱分析器，Claude 风格深色界面。拖入文件即
 > **多分辨率 STFT** — 标准、多频段、相位重分配三种模式
 > **灵活的 Y 轴** — 线性、对数、mel、bark 四种频率刻度
 > **波形预览** — 降采样包络镜像填充
-> **拖放加载** — 支持 WAV、FLAC、MP3、M4A、OGG、AAC、OPUS、APE、DSD 等格式
+> **拖放加载** — 支持 WAV、FLAC、MP3、M4A、OGG、AAC、OPUS、APE、等格式
 > **色条联动** — dB 渐变色条随色板同步更新
 > **双语界面** — 工具栏一键切换中文/英文
 > **截图导出** — 保存当前频谱视图为 PNG
