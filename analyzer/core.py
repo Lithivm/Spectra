@@ -39,6 +39,8 @@ if not _wisdom_loaded:
 import librosa
 import numpy as np
 
+import pyloudnorm as pyln
+
 librosa.set_fftlib(fftw_scipy)
 
 from lang import t
@@ -446,7 +448,7 @@ class AudioAnalyzer:
             "zero_crossing": self._compute_zcr(audio),
             "freq_range":    self._compute_freq_range(audio),
             "bit_depth":     self._estimate_bit_depth(audio),
-            "loudness_lufs": self._estimate_loudness(audio),
+            "loudness": self._measure_loudness(audio, sr),
         }
 
     def _detect_clipping(self, audio: np.ndarray, sr: int) -> dict:
@@ -546,8 +548,70 @@ class AudioAnalyzer:
         except (ValueError, OverflowError):
             return 32
 
-    def _estimate_loudness(self, audio: np.ndarray) -> float:
-        rms = self._compute_rms(audio)
-        if rms <= 0:
-            return -math.inf
-        return round(20 * math.log10(rms), 1)
+    def _measure_loudness(self, audio: np.ndarray, sr: int) -> dict:
+        """EBU R128 integrated loudness, short-term, LRA, true-peak (BS.1770-4).
+
+        Returns:
+            integrated_lufs:  integrated program loudness (LUFS)
+            short_term_lufs:  max short-term loudness (LUFS, 3s blocks)
+            lra_lu:           loudness range (LU)
+            true_peak_db:     true peak (dBTP, 4x oversampled)
+        """
+        # pyloudnorm expects (samples, channels)
+        if audio.ndim == 1:
+            audio_st = np.column_stack([audio, audio])
+        else:
+            audio_st = audio.T[:, :2]
+        if audio_st.shape[1] == 1:
+            audio_st = np.column_stack([audio_st[:, 0], audio_st[:, 0]])
+
+        meter = pyln.Meter(sr)
+        integrated = float(meter.integrated_loudness(audio_st))
+
+        # Short-term loudness: 3-second non-overlapping blocks
+        block_s = 3
+        hop = block_s * sr
+        n_blocks = max(1, len(audio_st) // hop)
+        st_vals: list[float] = []
+        for i in range(n_blocks):
+            block = audio_st[i * hop : (i + 1) * hop]
+            if len(block) >= sr:
+                st_vals.append(float(meter.integrated_loudness(block)))
+        short_term = max(st_vals) if st_vals else integrated
+
+        # Loudness range (LRA): P10–P95 percentile spread
+        if len(st_vals) >= 3:
+            sv = sorted(st_vals)
+            p10 = sv[int(len(sv) * 0.1)]
+            p95 = sv[int(len(sv) * 0.95)]
+            lra = round(p95 - p10, 1)
+        else:
+            lra = 0.0
+
+        # True peak — 4× oversampled per BS.1770-4
+        tp = self._true_peak(audio_st, sr)
+
+        return {
+            "integrated_lufs": round(integrated, 1),
+            "short_term_lufs": round(short_term, 1),
+            "lra_lu": lra,
+            "true_peak_db": tp,
+        }
+
+    @staticmethod
+    def _true_peak(audio_st: np.ndarray, sr: int) -> float:
+        """BS.1770-4 true peak: 4× polyphase upsampling → max |sample| → dBTP."""
+        from scipy import signal as scipy_signal
+
+        oversample = 4
+        # Resample each channel, take max across all
+        peak = 0.0
+        for ch in range(audio_st.shape[1]):
+            upsampled = scipy_signal.resample_poly(
+                audio_st[:, ch].astype(np.float64), oversample, 1)
+            ch_peak = float(np.max(np.abs(upsampled)))
+            if ch_peak > peak:
+                peak = ch_peak
+        if peak < 1e-12:
+            return -120.0
+        return round(20 * math.log10(peak), 1)

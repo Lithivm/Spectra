@@ -266,6 +266,36 @@ class _QualityWorker(QThread):
         self.progress.emit(100)  # render done
 
 
+class _BatchWorker(QThread):
+    finished = pyqtSignal(object)           # list[dict] — flattened results
+    progress = pyqtSignal(int, str, bool)    # n, filename, ok
+
+    def __init__(self, files: list[Path]) -> None:
+        super().__init__()
+        self._files = files
+
+    def run(self) -> None:
+        from analyzer.core import AudioAnalyzer as AA
+        from analyzer.metadata import get_metadata
+        from analyzer.batch import flatten_analysis
+
+        results = []
+        for i, fp in enumerate(self._files):
+            if self.isInterruptionRequested():
+                break
+            try:
+                analyzer = AA(fp)
+                qa = analyzer.analyze_quality()
+                md = get_metadata(fp)
+                row = flatten_analysis(md, qa, fp)
+                results.append(row)
+                self.progress.emit(i + 1, fp.name, True)
+            except Exception:
+                results.append({"filename": fp.name, "filepath": str(fp)})
+                self.progress.emit(i + 1, fp.name, False)
+        self.finished.emit(results)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -274,6 +304,8 @@ class MainWindow(QMainWindow):
         self._current_path: Path | None = None
         self._spectrum_worker: _SpectrumWorker | None = None
         self._quality_worker: _QualityWorker | None = None
+        self._batch_worker: _BatchWorker | None = None
+        self._batch_results: list[dict] = []
         self._wave: WaveformWidget | None = None
         self._spec: SpectrogramGLWidget | None = None
         self._y_axis: _YAxisWidget | None = None
@@ -492,6 +524,18 @@ class MainWindow(QMainWindow):
         self._lang_btn.clicked.connect(self._on_toggle_lang)
         layout.addWidget(self._lang_btn)
 
+        self._batch_btn = QPushButton(t("批量", "Batch"))
+        self._batch_btn.setFixedHeight(30)
+        self._batch_btn.clicked.connect(self._on_batch_export)
+        layout.addWidget(self._batch_btn)
+
+        self._cutoff_btn = QPushButton(t("截止线", "Cutoff"))
+        self._cutoff_btn.setCheckable(True)
+        self._cutoff_btn.setFixedHeight(30)
+        self._cutoff_btn.setChecked(True)
+        self._cutoff_btn.toggled.connect(self._on_cutoff_toggled)
+        layout.addWidget(self._cutoff_btn)
+
         return card
 
     def _create_statusbar(self) -> None:
@@ -612,9 +656,19 @@ class MainWindow(QMainWindow):
                 pass
             self._quality_worker = None
 
+    def _on_cutoff_toggled(self, checked: bool) -> None:
+        if self._spec:
+            self._spec.toggle_cutoff(checked)
+
     def _on_quality_done(self, qa: Any) -> None:
         self._meta.load_analysis(qa)
         self._quality_worker = None
+        if qa and self._spec:
+            ups = qa.get("upsampling", {})
+            if not ups.get("ok", True):
+                self._spec.set_cutoff_line(ups.get("cutoff_hz", None))
+            else:
+                self._spec.set_cutoff_line(None)
 
     def _on_save_screenshot(self) -> None:
         if not self._spec:
@@ -630,6 +684,56 @@ class MainWindow(QMainWindow):
                 img.save(path_str, "PNG")
             self._status_label.setText(f"{t('已保存', 'Saved')}  {path_str}")
 
+    def _on_batch_export(self) -> None:
+        formats = ["*.wav", "*.mp3", "*.flac", "*.m4a", "*.ogg", "*.aac", "*.opus", "*.ape"]
+        path_list, _ = QFileDialog.getOpenFileNames(
+            self, t("选择多个音频文件", "Select Audio Files"), str(Path.home()),
+            "Audio Files (" + " ".join(formats) + ")"
+        )
+        if path_list:
+            self._start_batch_analysis([Path(p) for p in path_list])
+
+    def _start_batch_analysis(self, files: list[Path]) -> None:
+        from ui.batch_dialog import BatchProgressDialog
+        from analyzer.batch import export_batch_csv
+
+        dialog = BatchProgressDialog(len(files), self)
+        dialog.show()
+
+        self._batch_results = []
+        worker = _BatchWorker(files)
+        self._batch_worker = worker
+
+        def on_progress(n, name, ok):
+            dialog.update_progress(n, name, ok)
+
+        def on_finished(results):
+            self._batch_results = results
+            self._batch_worker = None
+            dialog.finish()
+            self._status_label.setText(
+                t(f"批量完成: {len(results)} 个文件",
+                  f"Batch done: {len(results)} files"))
+
+        def on_export():
+            dest, _ = QFileDialog.getSaveFileName(
+                self, t("导出CSV", "Export CSV"), "batch_analysis.csv",
+                "CSV Files (*.csv)")
+            if dest:
+                export_batch_csv(self._batch_results, Path(dest))
+                self._status_label.setText(f"{t('已导出', 'Exported')} {dest}")
+
+        def on_cancel():
+            if worker.isRunning():
+                worker.requestInterruption()
+
+        worker.progress.connect(on_progress)
+        worker.finished.connect(on_finished)
+        dialog.cancelled.connect(on_cancel)
+        dialog._export_btn.clicked.connect(on_export)
+
+        worker.start()
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
@@ -639,10 +743,12 @@ class MainWindow(QMainWindow):
         event.ignore()
 
     def dropEvent(self, event: QDropEvent) -> None:
-        for url in event.mimeData().urls():
-            if url.isLocalFile():
-                self._load_file(Path(url.toLocalFile()))
-                return
+        audio_paths = [Path(url.toLocalFile()) for url in event.mimeData().urls()
+                       if url.isLocalFile() and self._is_audio(url.toLocalFile())]
+        if len(audio_paths) == 1:
+            self._load_file(audio_paths[0])
+        elif len(audio_paths) > 1:
+            self._start_batch_analysis(audio_paths)
 
     def _on_toggle_lang(self) -> None:
         toggle_lang()
@@ -663,11 +769,12 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._cancel_spectrum()
         self._cancel_quality()
+        if self._batch_worker is not None and self._batch_worker.isRunning():
+            self._batch_worker.requestInterruption()
+            self._batch_worker.wait(3000)
         super().closeEvent(event)
 
     @staticmethod
     def _is_audio(path: str) -> bool:
-        return Path(path).suffix.lower() in {
-            ".wav", ".mp3", ".flac", ".ogg", ".m4a",
-            ".aac", ".wma", ".aiff", ".mid", ".opus", ".ape",
-        }
+        from analyzer.load import is_audio_file
+        return is_audio_file(path)

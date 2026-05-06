@@ -17,6 +17,7 @@ dependencies = [
     "soundfile>=0.12",
     "pyfftw>=0.14",
     "av>=12.0",
+    "pyloudnorm>=0.1.0",
 ]
 
 [project.gui-scripts]

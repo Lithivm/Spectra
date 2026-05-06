@@ -330,6 +330,44 @@ class MetadataPanel(QWidget):
                 label, ok, warn = t("压缩", "Compressed"), False, True
             self._content_layout.addWidget(
                 _AnalysisRow(ok, t("动态范围", "Dynamics"), f"DR {dr_val:.1f} — {label}", warn=warn))
+
+            # ── LUFS (EBU R128) ──
+            loud = qa.get("loudness", {})
+            if loud:
+                il = loud.get("integrated_lufs", 0)
+                il_ok = -24 <= il <= -6
+                self._content_layout.addWidget(
+                    _AnalysisRow(il_ok, "LUFS (I)",
+                                 f"{il:.1f} LUFS", warn=(il > -5)))
+
+                stl = loud.get("short_term_lufs", 0)
+                self._content_layout.addWidget(
+                    _Row("LUFS (S)", f"{stl:.1f} LUFS"))
+
+                lra = loud.get("lra_lu", 0)
+                self._content_layout.addWidget(
+                    _Row("LRA", f"{lra:.1f} LU" if lra > 0 else "N/A"))
+
+                tp = loud.get("true_peak_db", 0)
+                tp_ok = tp <= 1.0
+                self._content_layout.addWidget(
+                    _AnalysisRow(tp_ok, t("真峰值", "True Peak"),
+                                 f"{tp:.1f} dBTP", warn=(tp > 0)))
+
+            # ── Additional metrics ──
+            peak_db = qa.get("peak_db", None)
+            if peak_db is not None:
+                self._content_layout.addWidget(_Row(t("峰值", "Peak"), f"{peak_db:.1f} dB"))
+            rms_val = qa.get("rms", None)
+            if rms_val is not None:
+                self._content_layout.addWidget(_Row("RMS", f"{rms_val:.4f}"))
+            freq_range = qa.get("freq_range", None)
+            if freq_range:
+                self._content_layout.addWidget(
+                    _Row(t("频响", "Freq Range"), f"{freq_range[0]:.0f} – {freq_range[1]:.0f} Hz"))
+            bit_depth = qa.get("bit_depth", None)
+            if bit_depth is not None:
+                self._content_layout.addWidget(_Row(t("位深", "Bit Depth"), f"{bit_depth}-bit"))
         else:
             self._content_layout.addWidget(
                 _Row("", t("分析不可用", "Analysis unavailable")))

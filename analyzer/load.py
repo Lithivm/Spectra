@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 SUPPORTED_EXTENSIONS = frozenset({
     ".flac", ".opus", ".wav", ".mp3", ".m4a", ".mp4",
     ".aac", ".wma", ".ape", ".ogg", ".tta", ".dsf", ".dff",
+    ".aiff", ".mid",
 })
 
 

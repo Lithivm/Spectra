@@ -10,7 +10,7 @@ Key features:
 
 import numpy as np
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtGui import QPainter, QColor, QFont
+from PyQt6.QtGui import QPainter, QColor, QFont, QPen
 from PyQt6.QtCore import Qt, QRectF, QPointF
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
@@ -416,6 +416,10 @@ class SpectrogramGLWidget(QOpenGLWidget):
         # ── Loading overlay ────────────────────────────────────────
         self._progress_visible = False
 
+        # ── Cutoff annotation ─────────────────────────────────────
+        self._cutoff_hz: float | None = None
+        self._show_cutoff = True
+
         self._rebuild_lut()
 
     # ── Public API ──────────────────────────────────────────────────
@@ -460,6 +464,16 @@ class SpectrogramGLWidget(QOpenGLWidget):
     def get_figure(self):
         return None
 
+    # ── Cutoff line ───────────────────────────────────────────────────
+
+    def set_cutoff_line(self, hz: float | None) -> None:
+        self._cutoff_hz = hz
+        self.update()
+
+    def toggle_cutoff(self, show: bool) -> None:
+        self._show_cutoff = show
+        self.update()
+
     # ── LUT ─────────────────────────────────────────────────────────
 
     # ── Progress bar ────────────────────────────────────────────────────
@@ -500,6 +514,51 @@ class SpectrogramGLWidget(QOpenGLWidget):
         )
 
         painter.restore()
+
+    def _paint_cutoff_overlay(self, painter: QPainter) -> None:
+        if self._cutoff_hz is None or self._cutoff_hz <= 0:
+            return
+        if not hasattr(self, '_freq_min') or not hasattr(self, '_freq_max'):
+            return
+        f_min, f_max = self._freq_min, self._freq_max
+        if f_min <= 0 or f_max <= f_min:
+            return
+
+        cutoff = self._cutoff_hz
+        if self._yscale_mode == "log":
+            f_min_safe = max(f_min, 1.0)
+            frac = (np.log10(max(cutoff, 1.0)) - np.log10(f_min_safe)) / (
+                np.log10(f_max) - np.log10(f_min_safe))
+        elif self._yscale_mode == "mel":
+            import librosa
+            m_cut = librosa.hz_to_mel(max(cutoff, 1.0))
+            m_min = librosa.hz_to_mel(f_min)
+            m_max = librosa.hz_to_mel(f_max)
+            frac = (m_cut - m_min) / (m_max - m_min) if m_max > m_min else 0.5
+        else:
+            frac = (cutoff - f_min) / (f_max - f_min) if f_max > f_min else 0.5
+
+        frac = max(0.0, min(1.0, frac))
+        # Match paintGL insets: 2px margins
+        ml, mr = 2, 2
+        y = int(self.height() * (1.0 - frac))
+
+        color = QColor("#E0554D")
+        pen = QPen(color)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.drawLine(ml, y, self.width() - mr - 1, y)
+
+        font = QFont("Segoe UI, sans-serif", 8)
+        painter.setFont(font)
+        painter.setPen(color)
+        label = f"Cutoff: {cutoff / 1000:.1f} kHz"
+        painter.drawText(
+            QRectF(ml + 4, y - 14, 140, 14),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            label,
+        )
 
     def _rebuild_lut(self) -> None:
         lut_np = build_lut_np(self._palette_name)
@@ -598,6 +657,11 @@ class SpectrogramGLWidget(QOpenGLWidget):
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             self._paint_progress_overlay(painter)
+            painter.end()
+        if self._show_cutoff and self._cutoff_hz is not None and self._cutoff_hz > 0:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self._paint_cutoff_overlay(painter)
             painter.end()
 
     def resizeGL(self, w: int, h: int) -> None:
