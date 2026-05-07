@@ -260,7 +260,7 @@ class MetadataPanel(QWidget):
         if analyzer.metadata:
             self._content_layout.addWidget(_section_label(t("标签", "TAGS")))
             self._content_layout.addWidget(_divider())
-            skip = {"filename", "filepath", "sample_rate", "bitrate", "channels", "mime_type"}
+            skip = {"filename", "filepath", "sample_rate", "bitrate", "channels", "mime_type", "duration"}
             for k, v in analyzer.metadata.items():
                 if k in skip:
                     continue
@@ -335,10 +335,8 @@ class MetadataPanel(QWidget):
             loud = qa.get("loudness", {})
             if loud:
                 il = loud.get("integrated_lufs", 0)
-                il_ok = -24 <= il <= -6
                 self._content_layout.addWidget(
-                    _AnalysisRow(il_ok, "LUFS (I)",
-                                 f"{il:.1f} LUFS", warn=(il > -5)))
+                    _Row("LUFS (I)", f"{il:.1f} LUFS"))
 
                 stl = loud.get("short_term_lufs", 0)
                 self._content_layout.addWidget(

@@ -54,6 +54,7 @@ _TAG_TR = {
     "音轨": ("音轨", "Track"),
     "碟片": ("碟片", "Disc"),
     "作曲": ("作曲", "Composer"),
+    "格式": ("格式", "Format"),
 }
 from .load import load_audio
 from .metadata import get_metadata
