@@ -260,7 +260,7 @@ class MetadataPanel(QWidget):
         if analyzer.metadata:
             self._content_layout.addWidget(_section_label(t("标签", "TAGS")))
             self._content_layout.addWidget(_divider())
-            skip = {"filename", "filepath"}
+            skip = {"filename", "filepath", "sample_rate", "bitrate", "channels", "mime_type"}
             for k, v in analyzer.metadata.items():
                 if k in skip:
                     continue
@@ -348,12 +348,6 @@ class MetadataPanel(QWidget):
                 self._content_layout.addWidget(
                     _Row("LRA", f"{lra:.1f} LU" if lra > 0 else "N/A"))
 
-                tp = loud.get("true_peak_db", 0)
-                tp_ok = tp <= 1.0
-                self._content_layout.addWidget(
-                    _AnalysisRow(tp_ok, t("真峰值", "True Peak"),
-                                 f"{tp:.1f} dBTP", warn=(tp > 0)))
-
             # ── Additional metrics ──
             peak_db = qa.get("peak_db", None)
             if peak_db is not None:
@@ -361,13 +355,6 @@ class MetadataPanel(QWidget):
             rms_val = qa.get("rms", None)
             if rms_val is not None:
                 self._content_layout.addWidget(_Row("RMS", f"{rms_val:.4f}"))
-            freq_range = qa.get("freq_range", None)
-            if freq_range:
-                self._content_layout.addWidget(
-                    _Row(t("频响", "Freq Range"), f"{freq_range[0]:.0f} – {freq_range[1]:.0f} Hz"))
-            bit_depth = qa.get("bit_depth", None)
-            if bit_depth is not None:
-                self._content_layout.addWidget(_Row(t("位深", "Bit Depth"), f"{bit_depth}-bit"))
         else:
             self._content_layout.addWidget(
                 _Row("", t("分析不可用", "Analysis unavailable")))

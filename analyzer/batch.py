@@ -15,7 +15,6 @@ BATCH_COLUMNS = [
     "clipping_count", "clipping_longest_ms",
     "cutoff_hz", "upsampling_ok",
     "dynamic_range_db",
-    "bit_depth", "freq_range_low", "freq_range_high",
 ]
 
 
@@ -45,10 +44,6 @@ def flatten_analysis(md: dict, qa: dict | None, filepath: Path) -> dict[str, Any
     if qa:
         row["peak_db"] = qa.get("peak_db", "")
         row["rms"] = qa.get("rms", "")
-        row["bit_depth"] = qa.get("bit_depth", "")
-        fr = qa.get("freq_range", (0, 0))
-        row["freq_range_low"] = fr[0]
-        row["freq_range_high"] = fr[1]
 
         clip = qa.get("clipping", {})
         row["clipping_count"] = clip.get("count", 0)

@@ -89,7 +89,17 @@
       "Bash(\"/c/Users/26279/AppData/Local/Programs/Python/Python310/python.exe\" -m py_compile ui/batch_dialog.py)",
       "Bash(\"/c/Users/26279/AppData/Local/Programs/Python/Python310/python.exe\" -m py_compile ui/main_window.py)",
       "Bash(\"/c/Users/26279/AppData/Local/Programs/Python/Python310/python.exe\" -m py_compile ui/spectrogram_widget.py)",
-      "Bash(\"/c/Users/26279/AppData/Local/Programs/Python/Python310/python.exe\" -m pytest tests/ -v --tb=short)"
+      "Bash(\"/c/Users/26279/AppData/Local/Programs/Python/Python310/python.exe\" -m pytest tests/ -v --tb=short)",
+      "Bash(gh release *)",
+      "Bash(curl -s \"https://api.github.com/repos/Lithivm/Spectra/releases\")",
+      "Bash(where pyinstaller *)",
+      "Bash(pyinstaller *)",
+      "Bash(powershell *)",
+      "PowerShell(gh release *)",
+      "Bash(python3 *)",
+      "Bash(perl *)",
+      "Bash(sed -i '/# cutoff line label/{N;N;N;N;N;d}' 'D:\\\\Claude code\\\\Spectra\\\\ui\\\\main_window.py')",
+      "Bash(sed -i '/self._cutoff_label\\\\.setText/d' 'D:\\\\Claude code\\\\Spectra\\\\ui\\\\main_window.py')"
     ]
   }
 }

@@ -419,6 +419,12 @@ class AudioAnalyzer:
             t("采样率", "Sample Rate"): f"{self.sample_rate} Hz",
             t("声道", "Channels"): self.channels,
         }
+        if self.data is not None:
+            dtype = self.data.dtype
+            if np.issubdtype(dtype, np.integer):
+                info[t("位深", "Bit Depth")] = str(np.iinfo(dtype).bits)
+            elif np.issubdtype(dtype, np.floating):
+                info[t("位深", "Bit Depth")] = f"{np.finfo(dtype).bits}-bit float"
         if self.metadata:
             for k in ("标题", "艺术家", "专辑", "年份", "流派"):
                 if self.metadata.get(k):
@@ -446,8 +452,6 @@ class AudioAnalyzer:
             "peak_sample":   peak_idx,
             "rms":           round(self._compute_rms(audio), 6),
             "zero_crossing": self._compute_zcr(audio),
-            "freq_range":    self._compute_freq_range(audio),
-            "bit_depth":     self._estimate_bit_depth(audio),
             "loudness": self._measure_loudness(audio, sr),
         }
 
@@ -524,29 +528,6 @@ class AudioAnalyzer:
 
     def _compute_zcr(self, audio: np.ndarray) -> int:
         return int(np.sum(np.abs(np.diff(np.signbit(audio)))))
-
-    def _compute_freq_range(self, audio: np.ndarray) -> tuple[float, float]:
-        S = np.fft.rfft(audio)
-        mag = np.abs(S) ** 2
-        mag_db = 10 * np.log10(mag + 1e-12)
-        threshold = np.max(mag_db) - 20
-        idx = np.where(mag_db >= threshold)[0]
-        freqs = np.fft.rfftfreq(len(audio), 1.0 / self.sample_rate)
-        if len(idx) == 0:
-            return 0.0, 0.0
-        return float(freqs[idx[0]]), float(freqs[idx[-1]])
-
-    def _estimate_bit_depth(self, audio: np.ndarray) -> int:
-        """粗略估计 bit depth，安全处理inf/overflow。"""
-        peak = float(np.max(np.abs(audio)))
-        if peak <= 0 or peak < 1e-10:
-            return 32
-        try:
-            log_val = math.log2(1.0 / peak)
-            depth = int(math.ceil(log_val))
-            return min(max(depth, 0), 32)
-        except (ValueError, OverflowError):
-            return 32
 
     def _measure_loudness(self, audio: np.ndarray, sr: int) -> dict:
         """EBU R128 integrated loudness, short-term, LRA, true-peak (BS.1770-4).
