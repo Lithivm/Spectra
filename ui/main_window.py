@@ -602,7 +602,6 @@ class MainWindow(QMainWindow):
             # quality analysis runs in background
             self._quality_worker = _QualityWorker(self._analyzer)
             self._quality_worker.finished.connect(self._on_quality_done)
-            self._quality_worker.progress.connect(self._spec.show_progress)
             self._quality_worker.start()
             t0 = time.perf_counter()
             self._wave.set_audio({
