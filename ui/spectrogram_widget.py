@@ -415,6 +415,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
         # ── Loading overlay ────────────────────────────────────────
         self._progress_visible = False
+        self._load_count = 0
 
         # ── Cutoff annotation ─────────────────────────────────────
         self._cutoff_hz: float | None = None
@@ -480,9 +481,10 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self.repaint()
 
     def hide_progress(self) -> None:
-        """Hide the loading overlay."""
-        self._progress_visible = False
-        self.update()
+        """Hide the loading overlay. Only hides when all loads are done."""
+        if self._load_count == 0:
+            self._progress_visible = False
+            self.update()
 
     def _paint_progress_overlay(self, painter: QPainter) -> None:
         if not self._progress_visible:
