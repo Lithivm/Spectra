@@ -477,11 +477,14 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
     def show_progress(self, _pct: float = 0.0) -> None:
         """Show the loading overlay."""
+        self._load_count += 1
+        print(f"[DEBUG] show_progress _load_count={self._load_count}")
         self._progress_visible = True
         self.repaint()
 
     def hide_progress(self) -> None:
         """Hide the loading overlay. Only hides when all loads are done."""
+        print(f"[DEBUG] hide_progress _load_count={self._load_count}")
         if self._load_count == 0:
             self._progress_visible = False
             self.update()

@@ -581,7 +581,9 @@ class MainWindow(QMainWindow):
             'sample_rate': self._analyzer.sample_rate,
             'mode': mode,
         })
-        self._spec.hide_progress()
+        self._spec._load_count -= 1
+        if self._spec._load_count == 0:
+            self._spec.hide_progress()
         self._cancel_quality()
         self._y_axis.set_data(freqs, self._spec._yscale_mode)
         self._x_axis.set_data(self._analyzer.duration)
@@ -591,8 +593,8 @@ class MainWindow(QMainWindow):
     def _load_file(self, path: Path) -> None:
         try:
             self._spec.show_progress()
-            self._cancel_spectrum()
             self._cancel_quality()
+            self._cancel_spectrum()
             t0 = time.perf_counter()
             self._analyzer = AudioAnalyzer(path)
             print(f"[TIMER] 音频解码: {time.perf_counter()-t0:.2f}s")
@@ -620,11 +622,13 @@ class MainWindow(QMainWindow):
             self._filename_widget.setText(path.name)
             self._spectrum_worker = _SpectrumWorker(self._analyzer, self._fft_size, self._mode)
             self._spectrum_worker.finished.connect(self._on_spectrum_done)
-            self._spectrum_worker.fading.connect(lambda: self._spec.hide_progress())
             self._spectrum_worker.start()
         except Exception:
             traceback.print_exc(file=sys.stderr)
             self._spec.hide_progress()
+            self._spec._load_count -= 1
+            if self._spec._load_count == 0:
+                self._spec.hide_progress()
             QMessageBox.critical(self, t("错误", "Error"), t(f"无法加载:\n{path.name}", f"Cannot load:\n{path.name}"))
 
     def _cancel_spectrum(self) -> None:
@@ -648,7 +652,9 @@ class MainWindow(QMainWindow):
     def _on_quality_done(self, qa: Any) -> None:
         self._meta.load_analysis(qa)
         self._quality_worker = None
-        self._spec.hide_progress()
+        self._spec._load_count -= 1
+        if self._spec._load_count == 0:
+            self._spec.hide_progress()
 
     def _on_save_screenshot(self) -> None:
         if not self._spec:
