@@ -1,9 +1,9 @@
 # Spectra
 
-> A modern GPU-accelerated spectrogram analyzer for music enthusiasts and HiFi listeners
-> 一款面向音乐爱好者与 HiFi 发烧友的 GPU 加速频谱分析工具
+> A modern OpenGL-rendered spectrogram analyzer for music enthusiasts and HiFi listeners
+> 一款面向音乐爱好者与 HiFi 发烧友的现代化频谱分析工具
 
-![screenshot](demo.png)
+![screenshot](demo.jpg)
 
 ---
 
@@ -11,7 +11,7 @@
 
 | English | 中文 |
 |---------|------|
-| **GPU Spectrogram** — OpenGL fragment shader with real-time colormap switching (12 palettes) | **GPU 频谱图** — OpenGL 片段着色器，实时切换 12 种色板 |
+| **OpenGL Spectrogram** — fragment shader with real-time colormap switching (12 palettes) | **OpenGL 频谱图** — 片段着色器渲染，实时切换 12 种色板 |
 | **Quality Analysis** — clipping detection, upsampling check, dynamic range (DR), LUFS (EBU R128), true peak, LRA | **质量分析** — 削波检测、升频检测、动态范围、响度 (LUFS)、真峰值、响度范围 |
 | **Multi-resolution STFT** — standard, multi-band, and phase-reassigned (iZotope RX style) | **多分辨率 STFT** — 标准、多频段、相位重分配三种模式 |
 | **Flexible Y-axis** — linear, logarithmic, mel, and bark frequency scales | **灵活 Y 轴** — 线性、对数、mel、bark 四种频率刻度 |
@@ -116,7 +116,7 @@ Spectra/
 │   └── batch.py                 # CSV export for batch analysis
 ├── ui/
 │   ├── main_window.py           # Main window, toolbar, workers, safe_slot
-│   ├── spectrogram_widget.py    # QOpenGLWidget GPU renderer + axis/colorbar
+│   ├── spectrogram_widget.py    # QOpenGLWidget renderer + axis/colorbar
 │   ├── waveform_widget.py       # Waveform envelope display
 │   ├── metadata_panel.py        # File info + quality analysis panel
 │   ├── batch_dialog.py          # Batch progress dialog
