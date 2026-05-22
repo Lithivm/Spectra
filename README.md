@@ -72,8 +72,8 @@ Drag an audio file into the window, or click **Open File** (打开文件).
 
 ### Pre-built · 打包版本
 
-Download `Spectra-v0.2.0-windows.zip` from [Releases](https://github.com/Lithivm/Spectra/releases), extract, and run `Spectra.exe`.
-从 Releases 下载 `Spectra-v0.2.0-windows.zip`，解压后运行 `Spectra.exe`。
+Download `Spectra-windows.zip` from [Releases](https://github.com/Lithivm/Spectra/releases), extract, and run `Spectra.exe`.
+从 Releases 下载 `Spectra-windows.zip`，解压后运行 `Spectra.exe`。
 
 ## Build · 构建
 
@@ -153,4 +153,4 @@ MIT
 
 ---
 
-*Built with PyQt6, OpenGL, librosa, and pyFFTW.*
+*Built with PyQt6, OpenGL, librosa, 和 pyFFTW.*
