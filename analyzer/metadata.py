@@ -14,9 +14,6 @@ import mutagen.asf
 import mutagen.wave
 import mutagen.monkeysaudio
 import mutagen.apev2
-from mutagen.id3 import ID3
-from mutagen.monkeysaudio import MonkeysAudio as _Monkeysaudio
-from mutagen.mp4 import MP4
 
 # 各格式常见的帧/键名 → 中文
 _MAPS: dict[str, dict[str, str]] = {
@@ -132,27 +129,38 @@ def get_metadata(filepath: str | Path) -> dict[str, Any]:
 
     # 判断格式
     raw = audio.__class__.__name__
-    fmt = raw.rpartition("Decoder")[0] if "Decoder" in raw else raw
+    display_fmt = raw.rpartition("Decoder")[0] if "Decoder" in raw else raw
+    tag_fmt = display_fmt  # key into _MAPS
     if audio.__class__.__name__.startswith("MP3"):
-        fmt = "MP3"
+        display_fmt = tag_fmt = "MP3"
     elif audio.__class__.__name__.startswith("MP4"):
-        fmt = "MPEG-4"
+        tag_fmt = "MPEG-4"  # _MAPS key for MP4 container tags
+        try:
+            codec = audio.info.codec
+            if codec and "alac" in str(codec).lower():
+                display_fmt = "ALAC"
+            elif codec and "aac" in str(codec).lower():
+                display_fmt = "AAC"
+            else:
+                display_fmt = f"MP4 ({codec})" if codec else "MPEG-4"
+        except Exception:
+            display_fmt = "MPEG-4"
     elif audio.__class__.__name__ == "FLAC":
-        fmt = "FLAC"
+        display_fmt = tag_fmt = "FLAC"
     elif audio.__class__.__name__ == "OGGVORBIS":
-        fmt = "OGGVORBIS"
+        display_fmt = tag_fmt = "OGGVORBIS"
     elif audio.__class__.__name__ == "ASF":
-        fmt = "ASF"
+        display_fmt = tag_fmt = "ASF"
     elif audio.__class__.__name__ == "WAVE":
-        fmt = "WAVE"
+        display_fmt = tag_fmt = "WAVE"
     elif audio.__class__.__name__.startswith("Monkeysaudio"):
-        fmt = "APE"
+        display_fmt = tag_fmt = "APE"
 
     result: dict[str, Any] = {
         "filename": filepath.name,
         "filepath": filepath,
-        "format": fmt,
-        "mime_type": _MIME_TYPES.get(fmt),
+        "format": display_fmt,
+        "mime_type": _MIME_TYPES.get(display_fmt),
     }
 
     # 通用信息
@@ -176,7 +184,7 @@ def get_metadata(filepath: str | Path) -> dict[str, Any]:
         pass
 
     # 元数据映射
-    mapping = _MAPS.get(fmt, {})
+    mapping = _MAPS.get(tag_fmt, {})
     if mapping and hasattr(audio, "tags"):
         for key, label in mapping.items():
             try:

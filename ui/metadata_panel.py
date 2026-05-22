@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 from PyQt6.QtWidgets import (
@@ -11,6 +12,8 @@ from PyQt6.QtCore import Qt
 
 from analyzer.core import AudioAnalyzer, _TAG_TR
 from lang import t, on_lang_change
+
+logger = logging.getLogger(__name__)
 from ui.styles import (
     BG_BASE, BG_SURFACE, BG_RAISED,
     BORDER_SUB, BORDER_MID,
@@ -63,8 +66,8 @@ class _Row(QWidget):
         k.setStyleSheet(f"""
             color: {TEXT_SEC};
             font-size: 11px;
-            min-width: 85px;
-            max-width: 85px;
+            min-width: 75px;
+            max-width: 75px;
             background: transparent;
             border: none;
         """)
@@ -83,6 +86,8 @@ class _Row(QWidget):
 
         layout.addWidget(k)
         layout.addWidget(v, stretch=1)
+        # 占位 — 与 _AnalysisRow 的指示点对齐
+        layout.addSpacing(20)
 
 
 class _AnalysisRow(QWidget):
@@ -101,18 +106,6 @@ class _AnalysisRow(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 6, 16, 6)
         layout.setSpacing(8)
-
-        # 状态点
-        dot = QLabel("●")
-        if ok:
-            color = ACCENT_GRN
-        elif warn:
-            color = ACCENT_AMB
-        else:
-            color = ACCENT_RED
-        dot.setStyleSheet(f"color: {color}; font-size: 12px; background: transparent; border: none;")
-        dot.setFixedWidth(16)
-        layout.addWidget(dot)
 
         k = QLabel(key)
         k.setStyleSheet(f"""
@@ -135,6 +128,19 @@ class _AnalysisRow(QWidget):
         """)
         v.setWordWrap(True)
         layout.addWidget(v, stretch=1)
+
+        # 状态点 — 靠右垂直居中对齐
+        dot = QLabel("●")
+        if ok:
+            color = ACCENT_GRN
+        elif warn:
+            color = ACCENT_AMB
+        else:
+            color = ACCENT_RED
+        dot.setStyleSheet(f"color: {color}; font-size: 12px; background: transparent; border: none;")
+        dot.setFixedWidth(20)
+        dot.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(dot)
 
 
 class MetadataPanel(QWidget):
@@ -249,7 +255,7 @@ class MetadataPanel(QWidget):
 
         t_info = time.perf_counter()
         info = analyzer.info()
-        print(f"[PROFILE] info(): {time.perf_counter() - t_info:.3f}s")
+        logger.debug("info(): %.3fs", time.perf_counter() - t_info)
 
         hi_keys = {t("采样率", "Sample Rate"), t("声道", "Channels"), t("时长", "Duration")}
         for k, v in info.items():
@@ -261,10 +267,12 @@ class MetadataPanel(QWidget):
             self._content_layout.addWidget(_section_label(t("标签", "TAGS")))
             self._content_layout.addWidget(_divider())
             skip = {"filename", "filepath", "sample_rate", "bitrate", "channels", "mime_type", "duration"}
+            # Generic metadata keys that don't come from audio tags
+            _GENERIC = {"format": ("格式", "Format")}
             for k, v in analyzer.metadata.items():
                 if k in skip:
                     continue
-                zh, en = _TAG_TR.get(k, (k, k))
+                zh, en = _GENERIC.get(k) or _TAG_TR.get(k, (k, k))
                 self._content_layout.addWidget(_Row(t(zh, en), str(v)))
 
         # ANALYSIS — placeholder, filled by load_analysis()
@@ -305,20 +313,25 @@ class MetadataPanel(QWidget):
             else:
                 n = clip.get("count", 0)
                 ms = clip.get("longest_ms", 0)
+                hard = clip.get("hard_clips", 0)
+                soft = clip.get("soft_clips", 0)
+                detail = f"{n} events, max {ms}ms"
+                if hard > 0 or soft > 0:
+                    detail += f"  ({hard} hard / {soft} soft)"
                 self._content_layout.addWidget(
-                    _AnalysisRow(False, t("削波", "Clipping"), f"{n} events, max {ms}ms"))
+                    _AnalysisRow(False, t("削波", "Clipping"), detail))
 
             ups = qa.get("upsampling", {})
+            chz = ups.get("cutoff_hz", 0)
+            nyq_hz = ups.get("nyq_hz", 0)
             if ups.get("ok"):
                 self._content_layout.addWidget(
                     _AnalysisRow(True, t("高频", "Hi-freq"), t("正常", "Normal")))
             else:
-                chz = ups.get("cutoff_hz", 0)
-                sr_hz = ups.get("sr_hz", 0)
+                pct = f" ({chz / nyq_hz:.0%} Nyq)" if nyq_hz > 0 else ""
                 self._content_layout.addWidget(
                     _AnalysisRow(False, t("高频", "Hi-freq"),
-                                 t(f"截止于 {chz/1000:.1f} kHz（上限 {sr_hz/2000:.0f} kHz）",
-                                   f"Cutoff at {chz/1000:.1f} kHz (limit {sr_hz/2000:.0f} kHz)")))
+                                 f"{chz/1000:.1f} kHz{pct}"))
 
             dr = qa.get("dynamic_range", {})
             dr_val = dr.get("dr", 0)
@@ -348,8 +361,12 @@ class MetadataPanel(QWidget):
 
             # ── Additional metrics ──
             peak_db = qa.get("peak_db", None)
+            tp_db = qa.get("true_peak_db", None)
             if peak_db is not None:
-                self._content_layout.addWidget(_Row(t("峰值", "Peak"), f"{peak_db:.1f} dB"))
+                label = f"{peak_db:.1f} dB"
+                if tp_db is not None and tp_db > peak_db:
+                    label += f"  (TP {tp_db:.1f})"
+                self._content_layout.addWidget(_Row(t("峰值", "Peak"), label))
             rms_val = qa.get("rms", None)
             if rms_val is not None:
                 self._content_layout.addWidget(_Row("RMS", f"{rms_val:.4f}"))

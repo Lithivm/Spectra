@@ -2,19 +2,17 @@
 
 支持格式:
   FLAC, OPUS, WAV, MP3, M4A/ALAC, AAC, WMA,
-  APE, OGG VORBIS, TTA, DSF/DSD
+  APE, OGG VORBIS, TTA, AIFF
 
 解码策略:
   所有格式 -> PyAV 解码到 float32 numpy 数组
-  DSD (DSF/DFF) -> ffmpeg 子进程回退
-  PyAV 失败 -> ffmpeg 子进程回退
+  PyAV 失败 -> ffmpeg 子进程回退（容错兜底）
 """
 
 from __future__ import annotations
 
 import logging
 import subprocess
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -23,8 +21,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = frozenset({
     ".flac", ".opus", ".wav", ".mp3", ".m4a", ".mp4",
-    ".aac", ".wma", ".ape", ".ogg", ".tta", ".dsf", ".dff",
-    ".aiff", ".mid",
+    ".aac", ".wma", ".ape", ".ogg", ".tta", ".aiff",
 })
 
 
@@ -38,13 +35,6 @@ def load_audio(filepath: str | Path) -> tuple[np.ndarray, int]:
 
     if not filepath.exists():
         raise FileNotFoundError(f"文件不存在: {filepath}")
-
-    # DSD 格式直接走 ffmpeg 回退
-    if filepath.suffix.lower() in (".dsf", ".dff"):
-        result = _try_load_ffmpeg(filepath)
-        if result is not None:
-            return result
-        raise ValueError(f"无法加载 DSD 文件: {filepath}")
 
     # PyAV 主解码
     result = _decode_with_av(filepath)
@@ -111,52 +101,64 @@ def _decode_with_av(filepath: Path) -> tuple[np.ndarray, int] | None:
 
 
 def _try_load_ffmpeg(filepath: Path) -> tuple[np.ndarray, int] | None:
-    """通过 ffmpeg 子进程解码到临时 wav，再用 soundfile 读取。"""
+    """通过 ffmpeg 子进程解码 — 使用 stdout pipe 输出原始 f32le 数据，免临时文件。"""
     try:
-        import soundfile as sf
+        import json
     except ImportError:
         return None
 
-    tmp_path = None
+    # 1. 用 ffprobe 探测原始参数
     try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
+        probe_cmd = [
+            "ffprobe", "-v", "quiet",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=sample_rate,channels",
+            "-of", "json",
+            str(filepath),
+        ]
+        probe_result = subprocess.run(
+            probe_cmd, capture_output=True, text=True, timeout=30,
+        )
+        if probe_result.returncode == 0:
+            info = json.loads(probe_result.stdout)
+            stream = info.get("streams", [{}])[0]
+            sr = int(stream.get("sample_rate", 48000))
+            ch = int(stream.get("channels", 2))
+        else:
+            sr, ch = 48000, 2
+    except Exception:
+        sr, ch = 48000, 2
 
+    # 2. 用 ffmpeg 输出 raw f32le 到 stdout pipe
+    try:
         cmd = [
             "ffmpeg", "-y",
             "-i", str(filepath),
-            "-ac", "2",
-            "-ar", "48000",
-            "-f", "wav",
-            tmp_path,
+            "-f", "f32le",
+            "-ac", str(ch),
+            "-ar", str(sr),
+            "pipe:1",
         ]
         result = subprocess.run(
             cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
             timeout=120,
         )
-        if result.returncode != 0:
+        if result.returncode != 0 or len(result.stdout) == 0:
+            return None
+        if len(result.stdout) % (4 * ch) != 0:
+            logger.debug("ffmpeg pipe output size mismatch for %s", filepath)
             return None
 
-        data, sr = sf.read(tmp_path, dtype="float32", always_2d=True)
-        # soundfile返回(samples, channels)，转置为(channels, samples)
-        return data.T, sr
+        samples = len(result.stdout) // (4 * ch)
+        data = np.frombuffer(result.stdout, dtype=np.float32).reshape((samples, ch))
+        # 转为 (channels, samples)
+        return data.T.copy(), sr
 
     except Exception as e:
         logger.debug("ffmpeg backend failed for %s: %s", filepath, e)
         return None
-    finally:
-        if tmp_path:
-            try:
-                Path(tmp_path).unlink(missing_ok=True)
-            except Exception:
-                pass
 
 
 def is_audio_file(filepath: str | Path) -> bool:
     return Path(filepath).suffix.lower() in SUPPORTED_EXTENSIONS
-
-
-def is_dsd_file(filepath: str | Path) -> bool:
-    return Path(filepath).suffix.lower() in (".dsf", ".dff")

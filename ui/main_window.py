@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import itertools
+import logging
 import sys
 import time
 import traceback
 from pathlib import Path
+
+import numpy as np
 from typing import Any
 
-from PyQt6.QtCore import QThread, Qt, pyqtSignal, QCoreApplication
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor
+from PyQt6.QtCore import QThread, Qt, pyqtSignal
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor, QPainter
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QHBoxLayout, QVBoxLayout,
     QLabel, QMainWindow, QMessageBox, QStatusBar, QWidget,
@@ -18,13 +21,13 @@ from PyQt6.QtWidgets import (
     QGraphicsDropShadowEffect, QGridLayout,
     QProgressBar,
 )
-from PyQt6.QtCore import QPropertyAnimation, QEasingCurve
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor, QPainter
 
 
-from analyzer.core import AudioAnalyzer
-from analyzer.spectrogram import PALETTE
+from analyzer.core import AudioAnalyzer, _stft_cache, _stft_lock
+from analyzer.palette import PALETTE
 from analyzer import is_audio_file, SUPPORTED_EXTENSIONS
+
+logger = logging.getLogger(__name__)
 from ui.metadata_panel import MetadataPanel
 from ui.spectrogram_widget import SpectrogramGLWidget, _YAxisWidget, _XAxisWidget, _ColorBarWidget
 from ui.waveform_widget import WaveformWidget
@@ -145,73 +148,6 @@ def _shadow(radius: int = 24, opacity: int = 70) -> QGraphicsDropShadowEffect:
 
 _card_ids = itertools.count()
 
-class _SpectrumProgress(QWidget):
-    """Floating progress bar overlay for the spectrogram."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._set_stylesheet()
-        self._opacity = QGraphicsOpacityEffect(self)
-        self._opacity.setOpacity(0)
-        self._progress = QProgressBar(self)
-        self._progress.setFixedHeight(6)
-        self._progress.setValue(0)
-        self.setEffect(self._opacity)
-        self._anim = QPropertyAnimation(self._opacity, b"opacity")
-        self._anim.setDuration(800)
-        self._anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        self._anim.finished.connect(self._on_anim_finished)
-
-    def _set_stylesheet(self) -> None:
-        self.setStyleSheet(f"""
-            #_spectrum_progress {{
-                background-color: rgba(20, 20, 24, 0.6);
-                border: none;
-                border-radius: 3px;
-            }}
-            #_spectrum_progress QProgressBar::chunk {{
-                background-color: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #ff7535,
-                    stop:0.5 #ffa319,
-                    stop:1 #ffcf49
-                );
-                border: none;
-                border-radius: 3px;
-            }}
-        """)
-        self.setObjectName("_spectrum_progress")
-
-    def show_progress(self) -> None:
-        self._opacity.setOpacity(0.9)
-        self._anim.setStartValue(0.0)
-        self._anim.setEndValue(0.9)
-        self._anim.start()
-
-    def update(self, value: int) -> None:
-        self._progress.setValue(value)
-
-    def fade_out(self) -> None:
-        self._anim.setStartValue(0.9)
-        self._anim.setEndValue(0.0)
-        self._anim.start()
-
-    def _on_anim_finished(self) -> None:
-        if self._opacity.opacity() < 0.01:
-            self.hide()
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        w, h = event.size().width(), event.size().height()
-        bar_w = int(w * 0.5)
-        self._progress.setGeometry(
-            (w - bar_w) // 2,
-            (h - 6) // 2,
-            bar_w,
-            6,
-        )
-
 def _card(radius: int = 12) -> QWidget:
     name = f"_card_{next(_card_ids)}"
     w = QWidget()
@@ -226,9 +162,24 @@ def _card(radius: int = 12) -> QWidget:
     return w
 
 
+def safe_slot(fn):
+    """Decorator: catch exceptions in Qt slots so they don't abort the process."""
+    from functools import wraps
+    @wraps(fn)
+    def _wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception:
+            logger.exception("Unhandled in slot %s", fn.__qualname__)
+    return _wrapper
+
+
 class _SpectrumWorker(QThread):
-    finished = pyqtSignal(object, object, object, str)
-    fading = pyqtSignal()
+    stream_init  = pyqtSignal(object, int, float)         # freqs, total_cols, duration
+    stream_block = pyqtSignal(int, object)                 # c0, block_db
+    stream_done  = pyqtSignal(object, object, object)      # freqs, times, full_db
+    finished     = pyqtSignal(object, object, object, str) # legacy path
+    fading       = pyqtSignal()
 
     def __init__(self, analyzer: AudioAnalyzer, n_fft: int = 2048,
                  mode: str = "multi") -> None:
@@ -238,13 +189,74 @@ class _SpectrumWorker(QThread):
         self._mode = mode
 
     def run(self) -> None:
+        try:
+            self._run_impl()
+        except Exception:
+            logger.exception("SpectrumWorker failed")
+            self.fading.emit()
+
+    def _run_impl(self) -> None:
         t0 = time.perf_counter()
-        freqs, times, db = self._analyzer.spectrogram_db(
-            n_fft=self._n_fft, mode=self._mode)
-        print(f"[TIMER] STFT (n_fft={self._n_fft}, mode={self._mode}): "
-              f"{time.perf_counter() - t0:.2f}s")
-        self.finished.emit(freqs, times, db, self._mode)
+        if self._mode == "standard":
+            # ── Cache fast-path ──
+            fp = str(self._analyzer.filepath) if self._analyzer.filepath else ""
+            cache_key = (fp, "standard", self._n_fft)
+            with _stft_lock:
+                cached = _stft_cache.get(cache_key)
+            if cached is not None:
+                freqs, times, db = cached
+                self.finished.emit(freqs, times, db, "standard")
+                self.fading.emit()
+                return
+            # ── Streaming path ──
+            def _init(freqs, total_cols, hop):
+                self._freqs = freqs
+                self._hop = hop
+                self.stream_init.emit(freqs, total_cols, self._analyzer.duration)
+            def _block(c0, blk):
+                self.stream_block.emit(c0, blk)
+            result = self._analyzer.spectrogram_db_streaming(
+                n_fft=self._n_fft, block_cols=64,
+                on_init=_init, on_block=_block,
+                cancel_check=self.isInterruptionRequested)
+            if result is not None:
+                freqs, times, db = result
+                self.stream_done.emit(freqs, times, db)
+                logger.debug("STFT streaming (n_fft=%s, mode=%s): %.2fs",
+                             self._n_fft, self._mode, time.perf_counter() - t0)
+            elif not self.isInterruptionRequested():
+                # File too short for streaming — fall back to non-streaming
+                freqs, times, db = self._analyzer.spectrogram_db(
+                    n_fft=self._n_fft, mode="standard")
+                logger.debug("STFT fallback (n_fft=%s, mode=%s): %.2fs",
+                             self._n_fft, "standard", time.perf_counter() - t0)
+                self.finished.emit(freqs, times, db, "standard")
+            # else: cancelled — emit nothing
+        else:
+            freqs, times, db = self._analyzer.spectrogram_db(
+                n_fft=self._n_fft, mode=self._mode)
+            logger.debug("STFT (n_fft=%s, mode=%s): %.2fs",
+                         self._n_fft, self._mode, time.perf_counter() - t0)
+            self.finished.emit(freqs, times, db, self._mode)
         self.fading.emit()
+
+
+class _LoadWorker(QThread):
+    """Load audio file + metadata in background — keeps UI responsive."""
+    loaded = pyqtSignal()       # success — UI reads self.analyzer
+    error  = pyqtSignal(str)    # failure
+
+    def __init__(self, path: Path) -> None:
+        super().__init__()
+        self._path = path
+        self.analyzer: AudioAnalyzer | None = None
+
+    def run(self) -> None:
+        try:
+            self.analyzer = AudioAnalyzer(self._path)
+            self.loaded.emit()
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class _QualityWorker(QThread):
@@ -258,8 +270,11 @@ class _QualityWorker(QThread):
     def run(self) -> None:
         self.progress.emit(33)  # audio decoded
         try:
-            result = self._analyzer.analyze_quality()
+            result = self._analyzer.analyze_quality(
+                cancel_check=self.isInterruptionRequested,
+            )
         except Exception:
+            logger.exception("QualityWorker failed")
             result = None
         self.progress.emit(90)  # STFT done
         self.finished.emit(result)
@@ -304,6 +319,7 @@ class MainWindow(QMainWindow):
         self._current_path: Path | None = None
         self._spectrum_worker: _SpectrumWorker | None = None
         self._quality_worker: _QualityWorker | None = None
+        self._load_worker: _LoadWorker | None = None
         self._batch_worker: _BatchWorker | None = None
         self._batch_results: list[dict] = []
         self._wave: WaveformWidget | None = None
@@ -314,7 +330,7 @@ class MainWindow(QMainWindow):
         self._meta: MetadataPanel | None = None
         self._analyzer: AudioAnalyzer | None = None
         self._current_palette = "inferno"
-        self._fft_size = 2048
+        self._fft_size = 8192
         self._mode = "standard"
 
         self.setStyleSheet(APP_STYLESHEET)
@@ -365,7 +381,7 @@ class MainWindow(QMainWindow):
         _grid.setColumnMinimumWidth(0, SIDE)
         _grid.setColumnStretch(0, 0)
         _grid.setColumnStretch(1, 1)
-        _grid.setColumnMinimumWidth(2, SIDE)
+        _grid.setColumnMinimumWidth(2, 48)
         _grid.setColumnStretch(2, 0)
 
         _grid.setRowMinimumHeight(0, SIDE)
@@ -391,7 +407,8 @@ class MainWindow(QMainWindow):
         _grid.addWidget(self._spec, 1, 1)
 
         self._colorbar = _ColorBarWidget()
-        self._colorbar.setFixedWidth(SIDE)
+        self._colorbar.setFixedWidth(48)
+        self._colorbar.set_data(self._spec._lut_np)
         _grid.addWidget(self._colorbar, 0, 2, 3, 1)
 
         # Row 2: X-axis spans all 3 columns, data offset-aligned to spectrogram
@@ -410,7 +427,7 @@ class MainWindow(QMainWindow):
         self._meta.setFixedWidth(310)
         root_layout.addWidget(self._meta)
 
-        self._spec._on_palette_changed("inferno")
+        self._spec.set_palette("inferno")
 
         on_lang_change(self._retranslate)
 
@@ -500,7 +517,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._fft_label)
         self._fft_combo = QComboBox()
         self._fft_combo.addItems(["256", "512", "1024", "2048", "4096", "8192", "16384"])
-        self._fft_combo.setCurrentText("2048")
+        self._fft_combo.setCurrentText("8192")
         self._fft_combo.setFixedHeight(30)
         self._fft_combo.setFixedWidth(72)
         self._fft_combo.currentTextChanged.connect(self._on_fft_size_changed)
@@ -538,7 +555,7 @@ class MainWindow(QMainWindow):
     def _on_palette_changed(self, name: str) -> None:
         self._current_palette = name
         if self._spec:
-            self._spec._on_palette_changed(name)
+            self._spec.set_palette(name)
             if self._colorbar:
                 self._colorbar.set_data(self._spec._lut_np)
 
@@ -546,7 +563,7 @@ class MainWindow(QMainWindow):
         self._mode = mode
         self._fft_combo.setEnabled(mode != "multi")
         if self._current_path:
-            self._load_file(self._current_path)
+            self._reload_spectrum()
 
     def _on_yscale_changed(self, scale: str) -> None:
         if self._spec:
@@ -557,19 +574,42 @@ class MainWindow(QMainWindow):
     def _on_fft_size_changed(self, size_str: str) -> None:
         self._fft_size = int(size_str)
         if self._current_path:
-            self._load_file(self._current_path)
+            self._reload_spectrum()
+
+    def _reload_spectrum(self) -> None:
+        """Re-run only the spectrogram (streaming or not); skip quality & file I/O."""
+        self._cancel_spectrum()
+        if self._mode == "standard":
+            # Clear cache so the scroll-fill animation always plays
+            fp = str(self._analyzer.filepath) if self._analyzer.filepath else ""
+            cache_key = (fp, "standard", self._fft_size)
+            with _stft_lock:
+                _stft_cache.pop(cache_key, None)
+            self._spec.hide_progress()
+            self._spectrum_worker = _SpectrumWorker(self._analyzer, self._fft_size, self._mode)
+            self._spectrum_worker.stream_init.connect(self._on_stream_init)
+            self._spectrum_worker.stream_block.connect(self._on_stream_block)
+            self._spectrum_worker.stream_done.connect(self._on_stream_done)
+            self._spectrum_worker.finished.connect(self._on_spectrum_done)
+        else:
+            self._spec.show_progress()
+            self._spectrum_worker = _SpectrumWorker(self._analyzer, self._fft_size, self._mode)
+            self._spectrum_worker.finished.connect(self._on_spectrum_done)
+            self._spectrum_worker.fading.connect(lambda: self._spec.hide_progress())
+        self._spectrum_worker.start()
 
     def _on_open_file(self) -> None:
-        formats = ["*.wav", "*.mp3", "*.flac", "*.m4a", "*.ogg", "*.aac", "*.aiff", "*.opus", "*.ape"]
+        formats = sorted(SUPPORTED_EXTENSIONS)
         path_list, _ = QFileDialog.getOpenFileNames(
             self, t("选择音频文件（可多选）", "Select Audio File(s)"), str(Path.home()),
-            "Audio Files (" + " ".join(formats) + ")"
+            "Audio Files (" + " ".join(f"*{ext}" for ext in formats) + ")"
         )
         if len(path_list) == 1:
             self._load_file(Path(path_list[0]))
         elif len(path_list) > 1:
             self._start_batch_analysis([Path(p) for p in path_list])
 
+    @safe_slot
     def _on_spectrum_done(self, freqs: Any, times: Any, db: Any, mode: str = "multi") -> None:
         t_set = time.perf_counter()
         self._spec.set_audio({
@@ -582,72 +622,154 @@ class MainWindow(QMainWindow):
             'mode': mode,
         })
         self._spec.hide_progress()
-        self._cancel_quality()
         self._y_axis.set_data(freqs, self._spec._yscale_mode)
         self._x_axis.set_data(self._analyzer.duration)
         self._colorbar.set_data(self._spec._lut_np)
-        QCoreApplication.processEvents()
+
+    @safe_slot
+    def _on_stream_init(self, freqs: np.ndarray, total_cols: int, duration: float) -> None:
+        n_freqs = freqs.shape[0] if freqs is not None else 1025
+        self._spec.begin_stream(n_freqs, total_cols, freqs, duration)
+        self._y_axis.set_data(freqs, self._spec._yscale_mode)
+        self._x_axis.set_data(duration)
+        self._colorbar.set_data(self._spec._lut_np)
+
+    @safe_slot
+    def _on_stream_block(self, c0: int, blk: np.ndarray) -> None:
+        self._spec.push_block(c0, blk)
+
+    @safe_slot
+    def _on_stream_done(self, freqs: np.ndarray, times: np.ndarray, full_db: np.ndarray) -> None:
+        self._spec.end_stream(full_db)
 
     def _load_file(self, path: Path) -> None:
-        try:
-            self._spec.show_progress()
-            self._cancel_spectrum()
-            self._cancel_quality()
-            t0 = time.perf_counter()
-            self._analyzer = AudioAnalyzer(path)
-            print(f"[TIMER] 音频解码: {time.perf_counter()-t0:.2f}s")
-            t0 = time.perf_counter()
-            self._meta.load_metadata(self._analyzer)
-            print(f"[TIMER] 元数据: {time.perf_counter()-t0:.2f}s")
-            # quality analysis runs in background
-            self._quality_worker = _QualityWorker(self._analyzer)
-            self._quality_worker.finished.connect(self._on_quality_done)
-            self._quality_worker.start()
-            t0 = time.perf_counter()
-            self._wave.set_audio({
-                'waveform': self._analyzer.waveform,
-                'sample_rate': self._analyzer.sample_rate,
-                'duration': self._analyzer.duration,
-            })
-            print(f"[TIMER] 波形渲染: {time.perf_counter()-t0:.2f}s")
-            self._current_path = path
-            self.setWindowTitle(f"Spectra  —  {path.name}")
-            self._status_label.setText(
-                f"{path.name}  ·  {self._analyzer.sample_rate/1000:.1f} kHz  ·  "
-                f"{int(self._analyzer.duration)//60}m{int(self._analyzer.duration)%60}s"
-            )
-            self._filename_widget.setText(path.name)
-            self._spectrum_worker = _SpectrumWorker(self._analyzer, self._fft_size, self._mode)
+        """Kick off background audio load — non-blocking."""
+        self._cancel_load()
+        self._cancel_spectrum()
+        self._cancel_quality()
+
+        self._current_path = path
+        self._spec.show_progress()
+
+        self._load_worker = _LoadWorker(path)
+        self._load_worker.loaded.connect(self._on_load_done)
+        self._load_worker.error.connect(self._on_load_error)
+        self._load_worker.start()
+
+    @safe_slot
+    def _on_load_done(self) -> None:
+        """Audio loaded — wire up quality, waveform, and spectrum workers."""
+        analyzer = self._load_worker.analyzer
+        old_load = self._load_worker
+        self._load_worker = None
+        self._hold_ref(old_load)
+        self._analyzer = analyzer
+
+        t0 = time.perf_counter()
+        self._meta.load_metadata(analyzer)
+        logger.debug("元数据: %.2fs", time.perf_counter() - t0)
+
+        self._quality_worker = _QualityWorker(analyzer)
+        self._quality_worker.finished.connect(self._on_quality_done)
+        self._quality_worker.start()
+
+        t0 = time.perf_counter()
+        self._wave.set_audio({
+            'waveform': analyzer.waveform,
+            'sample_rate': analyzer.sample_rate,
+            'duration': analyzer.duration,
+        })
+        logger.debug("波形渲染: %.2fs", time.perf_counter() - t0)
+
+        path = analyzer.filepath
+        self.setWindowTitle(f"Spectra  —  {path.name}")
+        self._status_label.setText(
+            f"{path.name}  ·  {analyzer.sample_rate/1000:.1f} kHz  ·  "
+            f"{int(analyzer.duration)//60}m{int(analyzer.duration)%60}s"
+        )
+        self._filename_widget.setText(path.name)
+
+        self._spectrum_worker = _SpectrumWorker(analyzer, self._fft_size, self._mode)
+        if self._mode == "standard":
+            self._spec.hide_progress()
+            self._spectrum_worker.stream_init.connect(self._on_stream_init)
+            self._spectrum_worker.stream_block.connect(self._on_stream_block)
+            self._spectrum_worker.stream_done.connect(self._on_stream_done)
+            self._spectrum_worker.finished.connect(self._on_spectrum_done)
+        else:
             self._spectrum_worker.finished.connect(self._on_spectrum_done)
             self._spectrum_worker.fading.connect(lambda: self._spec.hide_progress())
-            self._spectrum_worker.start()
-        except Exception:
-            traceback.print_exc(file=sys.stderr)
-            self._spec.hide_progress()
-            QMessageBox.critical(self, t("错误", "Error"), t(f"无法加载:\n{path.name}", f"Cannot load:\n{path.name}"))
+        self._spectrum_worker.start()
+
+    @safe_slot
+    def _on_load_error(self, msg: str) -> None:
+        old_load = self._load_worker
+        self._load_worker = None
+        self._hold_ref(old_load)
+        self._spec.hide_progress()
+        path = self._current_path
+        QMessageBox.critical(self, t("错误", "Error"),
+                             t(f"无法加载:\n{path.name if path else msg}",
+                               f"Cannot load:\n{path.name if path else msg}"))
 
     def _cancel_spectrum(self) -> None:
         if self._spectrum_worker is not None:
-            try:
-                self._spectrum_worker.requestInterruption()
-                self._spectrum_worker.wait()
-            except Exception:
-                pass
+            old = self._spectrum_worker
             self._spectrum_worker = None
+            old.requestInterruption()
+            for sig in (old.stream_init, old.stream_block, old.stream_done,
+                         old.finished, old.fading):
+                try:
+                    sig.disconnect()
+                except Exception:
+                    pass
+            self._hold_ref(old)
 
     def _cancel_quality(self) -> None:
         if self._quality_worker is not None:
-            try:
-                self._quality_worker.requestInterruption()
-                self._quality_worker.wait()
-            except Exception:
-                pass
+            old = self._quality_worker
             self._quality_worker = None
+            old.requestInterruption()
+            for sig in (old.finished, old.progress):
+                try:
+                    sig.disconnect()
+                except Exception:
+                    pass
+            self._hold_ref(old)
 
+    def _cancel_load(self) -> None:
+        if self._load_worker is not None:
+            old = self._load_worker
+            self._load_worker = None
+            old.requestInterruption()
+            for sig in (old.loaded, old.error):
+                try:
+                    sig.disconnect()
+                except Exception:
+                    pass
+            self._hold_ref(old)
+
+    def _hold_ref(self, worker: QThread) -> None:
+        """Keep *worker* Python wrapper alive so GC can't __del__+wait()
+        a live C++ thread.  Finished zombies are purged lazily."""
+        if not hasattr(self, '_zombies'):
+            self._zombies: list[QThread] = []
+        try:
+            self._zombies = [z for z in self._zombies if z.isRunning()]
+        except RuntimeError:
+            pass
+        self._zombies.append(worker)
+
+    @safe_slot
     def _on_quality_done(self, qa: Any) -> None:
         self._meta.load_analysis(qa)
+        old_quality = self._quality_worker
         self._quality_worker = None
+        self._hold_ref(old_quality)
         self._spec.hide_progress()
+        if qa and "upsampling" in qa:
+            cutoff = qa["upsampling"].get("cutoff_hz")
+            self._spec.set_cutoff_line(cutoff)
 
     def _on_save_screenshot(self) -> None:
         if not self._spec:
@@ -655,7 +777,7 @@ class MainWindow(QMainWindow):
         default = str(self._current_path.with_suffix(".png").name) if self._current_path else "spectrogram.png"
         path_str, _ = QFileDialog.getSaveFileName(
             self, t("保存截图", "Save Screenshot"), default,
-            "PNG Image (*.png);;JPEG Image (*.jpg)"
+            "PNG Image (*.png)"
         )
         if path_str:
             img = self._spec.grabFramebuffer()

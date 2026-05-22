@@ -9,8 +9,8 @@ Key features:
 """
 
 import numpy as np
-from PyQt6.QtWidgets import QWidget
-from PyQt6.QtGui import QPainter, QColor, QFont, QPen
+from PyQt6.QtWidgets import QWidget, QLabel
+from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QImage
 from PyQt6.QtCore import Qt, QRectF, QPointF
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
@@ -20,16 +20,19 @@ from ui.styles import BORDER_MID, TEXT_DIM
 # ── Palette anchor stops ──────────────────────────────────────────
 _PALETTE_STOPS: dict[str, list[tuple[float, tuple[float, float, float]]]] = {
     "rx": [
-        (0.00, (0.000, 0.000, 0.000)),       # black
-        (0.15, (0.000, 0.020, 0.120)),       # near-black deep blue
-        (0.30, (0.000, 0.200, 0.350)),       # deep blue-cyan
-        (0.48, (0.000, 0.550, 0.600)),       # cyan ← RX default primary
-        (0.62, (0.200, 0.600, 0.300)),       # cyan-green transition
-        (0.72, (0.700, 0.500, 0.000)),       # orange-yellow
-        (0.82, (0.900, 0.280, 0.000)),       # orange
-        (0.91, (0.800, 0.050, 0.000)),       # deep red-orange
-        (0.97, (1.000, 0.400, 0.200)),       # bright orange-red
-        (1.00, (1.000, 1.000, 1.000)),       # white
+        (0.00, (0.000, 0.000, 0.000)),       # black (-120 dB)
+        (0.08, (0.000, 0.020, 0.120)),       # near-black deep blue (-110 dB)
+        (0.18, (0.050, 0.050, 0.250)),       # dark violet-blue
+        (0.30, (0.100, 0.120, 0.400)),       # purple
+        (0.40, (0.000, 0.350, 0.550)),       # blue-cyan
+        (0.48, (0.000, 0.550, 0.600)),       # cyan — RX primary
+        (0.55, (0.550, 0.420, 0.000)),       # warm brown (~ -60 dB)
+        (0.62, (0.880, 0.520, 0.000)),       # orange (~ -45 dB, knee)
+        (0.72, (0.950, 0.320, 0.000)),       # orange-red
+        (0.82, (0.920, 0.120, 0.000)),       # deep red
+        (0.91, (0.980, 0.280, 0.080)),       # bright red-orange
+        (0.97, (1.000, 0.650, 0.250)),       # bright warm highlight
+        (1.00, (1.000, 1.000, 1.000)),       # white (0 dB)
     ],
     "inferno": [
         (0.00, (0.00, 0.00, 0.02)),
@@ -91,11 +94,11 @@ _PALETTE_STOPS: dict[str, list[tuple[float, tuple[float, float, float]]]] = {
 }
 
 LUT_SIZE = 256
-DB_MIN = -90.0
+DB_MIN = -120.0
 DB_MAX = 0.0
 GAMMA = 1.0
 KNEE_DB = -45.0   # lower knee — more signal stays in the dark region
-NOISE_DB = -75.0  # deeper noise floor crush
+NOISE_DB = -110.0  # noise floor crush starts here, pure black at DB_MIN
 
 
 # ── LUT helpers ────────────────────────────────────────────────────
@@ -139,16 +142,16 @@ def build_lut(palette_name: str = "rx") -> list[QColor]:
         x = i / (LUT_SIZE - 1)          # 0 = DB_MIN, 1 = 0 dB
 
         if x < nf:
-            # noise floor: fast crush to black
-            t = (x / nf) ** 4.0 * 0.01
+            # noise floor: soft crush to black — only pure black near DB_MIN
+            t = (x / nf) ** 2.0 * 0.06
         elif x < kn:
             # mid-range: slow ramp, stays dark
             s = (x - nf) / (kn - nf)
-            t = 0.01 + (s ** 1.8) * 0.44
+            t = 0.06 + (s ** 1.8) * 0.39
         else:
             # above knee: fast brightening
             s = (x - kn) / (1.0 - kn)
-            t = 0.45 + 0.55 * (s ** 0.5)
+            t = 0.45 + 0.55 * (s ** 0.4)
 
         t = max(0.0, min(1.0, t))
         # Gamma correction (currently 1.0 — identity)
@@ -304,9 +307,11 @@ class _XAxisWidget(QWidget):
             if t < 1:
                 label = f"{t * 1000:.0f}ms"
             elif t < 60:
-                label = f"{t:.1f}s"
+                label = f"{int(t)}s"
             else:
-                label = f"{t / 60:.1f}min"
+                m = int(t // 60)
+                s = int(t % 60)
+                label = f"{m}m{s:02d}s"
             painter.setPen(QColor(170, 166, 161))
             painter.drawText(
                 QRectF(x - 35, 5, 70, h - 5),
@@ -322,18 +327,29 @@ class _ColorBarWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._lut: np.ndarray = np.zeros((256, 4), dtype=np.uint8)
+        self._bar_img: QImage | None = None
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
     def set_data(self, lut_np: np.ndarray) -> None:
         self._lut = np.ascontiguousarray(lut_np[:, :4]) if lut_np is not None else np.zeros((256, 4), dtype=np.uint8)
+        self._bar_img = None
         self.update()
+
+    def _build_bar_image(self) -> None:
+        """Build a vertical 1-pixel-wide gradient image — top = 0 dB, bottom = -90 dB."""
+        lut = self._lut
+        n_lut = len(lut)
+        img = QImage(1, n_lut, QImage.Format.Format_RGBA8888)
+        for i in range(n_lut):
+            r, g, b, a = int(lut[i][0]), int(lut[i][1]), int(lut[i][2]), int(lut[i][3])
+            # Row 0 = top = 0 dB (lut[-1]), row n_lut-1 = bottom = -90 dB (lut[0])
+            img.setPixelColor(0, n_lut - 1 - i, QColor(r, g, b, a))
+        self._bar_img = img
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        # Colorbar spans all 3 grid rows — align gradient to spectrogram
-        # with 5 px protrusion above / below
         SIDE = 36
         PROTRUDE = 5
         pad_top = SIDE - PROTRUDE
@@ -343,17 +359,15 @@ class _ColorBarWidget(QWidget):
             painter.end()
             return
 
-        bar_x = 2
-        bar_w = 5
-        lut = self._lut
-        n_lut = len(lut)
+        bar_x = 4
+        bar_w = 14
 
-        # Gradient bar
-        for py in range(h_eff):
-            idx = int((h_eff - 1 - py) / max(h_eff - 1, 1) * (n_lut - 1))
-            idx = max(0, min(n_lut - 1, idx))
-            r, g, b, a = int(lut[idx][0]), int(lut[idx][1]), int(lut[idx][2]), int(lut[idx][3])
-            painter.fillRect(bar_x, pad_top + py, bar_w, 2, QColor(r, g, b, a))
+        # Gradient bar — use scaled QImage instead of per-pixel fillRect
+        if self._bar_img is None:
+            self._build_bar_image()
+        painter.drawImage(QRectF(bar_x, pad_top, bar_w, h_eff),
+                          self._bar_img,
+                          QRectF(0, 0, 1, self._bar_img.height()))
 
         # Border
         painter.setPen(QColor(85, 83, 79))
@@ -363,9 +377,9 @@ class _ColorBarWidget(QWidget):
         # dB ticks
         font = QFont("Segoe UI, sans-serif", 7)
         painter.setFont(font)
-        DB_MIN_V = -90.0
+        DB_MIN_V = -120.0
         DB_MAX_V = 0.0
-        db_ticks = [0, -20, -40, -60, -80]
+        db_ticks = [0, -20, -40, -60, -80, -100, -120]
 
         for db_val in db_ticks:
             frac = (db_val - DB_MAX_V) / (DB_MIN_V - DB_MAX_V)
@@ -404,7 +418,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._palette_name = "inferno"
         self._lut_tex_id: int | None = None
         self._lut_np: np.ndarray = np.zeros((256, 4), dtype=np.uint8)
-        self._vmin = -90.0
+        self._vmin = -120.0
         self._vmax = 0.0
         self._yscale_mode = "linear"
         self._freq_min = 20.0
@@ -413,13 +427,31 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self.frequencies = None
         self.duration = 0.0
 
-        # ── Loading overlay ────────────────────────────────────────
-        self._progress_visible = False
-        self._load_count = 0
+        # ── Loading overlay — QLabel avoids QPainter text on FBO ───
+        self._progress_label = QLabel(self)
+        self._progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._progress_label.setFixedSize(130, 34)
+        self._progress_label.setStyleSheet(
+            "QLabel {"
+            "  background: rgba(0, 0, 0, 180);"
+            "  border-radius: 8px;"
+            "  color: #d2cfca;"
+            "  font-size: 13px;"
+            "  font-weight: 500;"
+            "}"
+        )
+        self._progress_label.setVisible(False)
 
         # ── Cutoff annotation ─────────────────────────────────────
         self._cutoff_hz: float | None = None
         self._show_cutoff = True
+
+        # ── Streaming state ────────────────────────────────────────
+        self._is_streaming = False
+        self._stream_total = 0
+        self._stream_filled = 0
+        self._stream_needs_realloc = False
+        self._pending_blocks: list[tuple[int, np.ndarray]] = []
 
         self._rebuild_lut()
 
@@ -428,9 +460,11 @@ class SpectrogramGLWidget(QOpenGLWidget):
     def set_data(self, data: np.ndarray) -> None:
         """Receive (n_freqs, n_frames) float32 dB matrix."""
         self._data = data.astype(np.float32)
+        self._stream_total = data.shape[1]
+        self._stream_filled = data.shape[1]
+        self._is_streaming = False
         self._vmin = -120.0
         self._vmax = 0.0
-        print(f"[GL] set_data: shape={data.shape}")
         self._needs_upload = True
         self.update()
 
@@ -446,6 +480,34 @@ class SpectrogramGLWidget(QOpenGLWidget):
                 self._freq_max = float(freqs[-1])
             self.set_data(db)
 
+    def begin_stream(self, n_freqs: int, total_cols: int,
+                     freqs: np.ndarray, duration: float) -> None:
+        """Start streaming mode — pre-allocate texture, show axes."""
+        self._is_streaming = True
+        self._stream_total = total_cols
+        self._stream_filled = 0
+        self._stream_needs_realloc = True
+        self._pending_blocks.clear()
+        self.frequencies = freqs
+        self.duration = duration
+        self._freq_min = float(freqs[0]) if len(freqs) > 0 else 20.0
+        self._freq_max = float(freqs[-1]) if len(freqs) > 0 else 22050.0
+        self._data = None
+        self._needs_upload = False
+        self.update()
+
+    def push_block(self, start_col: int, block_db: np.ndarray) -> None:
+        """Enqueue a block of columns for the next paintGL pass."""
+        self._pending_blocks.append((start_col, block_db))
+        self.update()
+
+    def end_stream(self, full_db: np.ndarray) -> None:
+        """Finish streaming — hold the complete matrix for resize repaints."""
+        self._data = np.ascontiguousarray(full_db, dtype=np.float32)
+        self._stream_filled = full_db.shape[1]
+        self._is_streaming = False
+        self.update()
+
     def set_palette(self, name: str) -> None:
         self._palette_name = name
         self._rebuild_lut()
@@ -454,9 +516,6 @@ class SpectrogramGLWidget(QOpenGLWidget):
             self._upload_lut()
             self.doneCurrent()
         self.update()
-
-    def _on_palette_changed(self, name: str) -> None:
-        self.set_palette(name)
 
     def _on_yscale_changed(self, scale: str) -> None:
         self._yscale_mode = scale
@@ -477,41 +536,18 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
     def show_progress(self, _pct: float = 0.0) -> None:
         """Show the loading overlay."""
-        self._progress_visible = True
-        self.repaint()
+        self._progress_label.setText(t("加载中…", "Loading…"))
+        self._reposition_progress_label()
+        self._progress_label.setVisible(True)
 
     def hide_progress(self) -> None:
-        """Hide the loading overlay. Only hides when all loads are done."""
-        if self._load_count == 0:
-            self._progress_visible = False
-            self.update()
+        """Hide the loading overlay."""
+        self._progress_label.setVisible(False)
 
-    def _paint_progress_overlay(self, painter: QPainter) -> None:
-        if not self._progress_visible:
-            return
-        painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
+    def _reposition_progress_label(self) -> None:
         w, h = self.width(), self.height()
-        cx, cy = w / 2.0, h / 2.0
-
-        # Semi-transparent backdrop
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 120))
-        painter.drawRoundedRect(QRectF(cx - 60, cy - 16, 120, 32), 8, 8)
-
-        # Text label
-        font = QFont("Segoe UI, sans-serif", 12)
-        font.setWeight(QFont.Weight.Medium)
-        painter.setFont(font)
-        painter.setPen(QColor(210, 207, 202))
-        painter.drawText(
-            QRectF(cx - 60, cy - 16, 120, 32),
-            Qt.AlignmentFlag.AlignCenter,
-            t("加载中…", "Loading…"),
-        )
-
-        painter.restore()
+        lw, lh = 130, 34
+        self._progress_label.move((w - lw) // 2, (h - lh) // 2)
 
     def _paint_cutoff_overlay(self, painter: QPainter) -> None:
         if self._cutoff_hz is None or self._cutoff_hz <= 0:
@@ -566,6 +602,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
     def initializeGL(self) -> None:
         glClearColor(0, 0, 0, 1)
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
 
         vert_src = """
         #version 330 core
@@ -591,15 +628,25 @@ class SpectrogramGLWidget(QOpenGLWidget):
         uniform float u_vmin;
         uniform float u_vmax;
         uniform int u_log_scale;
+        uniform float u_f_min;
+        uniform float u_f_max;
+        uniform int u_filled_cols;
+        uniform int u_total_cols;
 
         void main() {
+            // Gate: unfilled columns → pure black
+            int col_idx = int(uv.x * float(u_total_cols));
+            if (col_idx >= u_filled_cols) {
+                fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+                return;
+            }
+
             // Y-axis: log or linear
             float y;
             if (u_log_scale == 1) {
-                float f_min_log  = log(20.0);
-                float f_max_log  = log(22050.0);
-                float f_val_log  = f_min_log + uv.y * (f_max_log - f_min_log);
-                float f_norm = (exp(f_val_log) - 20.0) / (22050.0 - 20.0);
+                float f_min_safe = max(u_f_min, 1.0);
+                float f_val_log  = log(f_min_safe) + uv.y * (log(u_f_max) - log(f_min_safe));
+                float f_norm = (exp(f_val_log) - u_f_min) / (u_f_max - u_f_min);
                 y = clamp(f_norm, 0.0, 1.0);
             } else {
                 y = uv.y;
@@ -607,6 +654,8 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
             float db = texture(u_spec, vec2(uv.x, y)).r;
             float t = clamp((db - u_vmin) / (u_vmax - u_vmin), 0.0, 1.0);
+            t = pow(t, 0.5);
+            t = clamp((t - 0.15) / 0.7, 0.0, 1.0);
 
             fragColor = texture(u_colormap, vec2(t, 0.5));
         }
@@ -639,6 +688,10 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._u_vmin      = glGetUniformLocation(self._gl_program, "u_vmin")
         self._u_vmax      = glGetUniformLocation(self._gl_program, "u_vmax")
         self._u_log_scale = glGetUniformLocation(self._gl_program, "u_log_scale")
+        self._u_f_min        = glGetUniformLocation(self._gl_program, "u_f_min")
+        self._u_f_max        = glGetUniformLocation(self._gl_program, "u_f_max")
+        self._u_filled_cols  = glGetUniformLocation(self._gl_program, "u_filled_cols")
+        self._u_total_cols   = glGetUniformLocation(self._gl_program, "u_total_cols")
 
         self._vao = glGenVertexArrays(1)
 
@@ -651,31 +704,59 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
-        if self._progress_visible:
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            self._paint_progress_overlay(painter)
-            painter.end()
         if self._show_cutoff and self._cutoff_hz is not None and self._cutoff_hz > 0:
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             self._paint_cutoff_overlay(painter)
             painter.end()
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._reposition_progress_label()
+
     def resizeGL(self, w: int, h: int) -> None:
-        print(f"[GL] resizeGL called")
         glViewport(0, 0, w, h)
 
     def paintGL(self) -> None:
-        print(f"[GL] paintGL called")
-        if self._needs_upload and self._data is not None:
+        w = int(self.width() * self.devicePixelRatio())
+        h = int(self.height() * self.devicePixelRatio())
+
+        # ── Streaming: allocate zero-filled texture on first frame ──
+        if self._stream_needs_realloc and self._is_streaming:
+            n_freqs = len(self.frequencies) if self.frequencies is not None else 1025
+            total_cols = self._stream_total
+            zeros = np.zeros((n_freqs, total_cols), dtype=np.float32)
+            glBindTexture(GL_TEXTURE_2D, self._tex_id)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F,
+                         total_cols, n_freqs, 0,
+                         GL_RED, GL_FLOAT, zeros)
+            self._data = zeros
+            self._stream_needs_realloc = False
+            glBindTexture(GL_TEXTURE_2D, 0)
+
+        # ── Non-streaming: legacy upload ──
+        if self._needs_upload and self._data is not None and not self._is_streaming:
             self._upload_texture()
             self._needs_upload = False
 
+        # ── Drain pending streaming blocks ──
+        if self._pending_blocks:
+            glBindTexture(GL_TEXTURE_2D, self._tex_id)
+            for c0, blk in self._pending_blocks:
+                blk = np.ascontiguousarray(blk, dtype=np.float32)
+                n_freqs, bw = blk.shape
+                glTexSubImage2D(GL_TEXTURE_2D, 0, c0, 0, bw, n_freqs,
+                               GL_RED, GL_FLOAT, blk)
+                self._stream_filled = max(self._stream_filled, c0 + bw)
+            self._pending_blocks.clear()
+            glBindTexture(GL_TEXTURE_2D, 0)
+
         # Minimal inset — axes are now separate widgets
         ml, mr, mt, mb = 2, 2, 2, 2
-        w = int(self.width() * self.devicePixelRatio())
-        h = int(self.height() * self.devicePixelRatio())
         rw = max(w - ml - mr, 1)
         rh = max(h - mt - mb, 1)
 
@@ -701,6 +782,10 @@ class SpectrogramGLWidget(QOpenGLWidget):
         glUniform1f(self._u_vmin, self._vmin)
         glUniform1f(self._u_vmax, self._vmax)
         glUniform1i(self._u_log_scale, 1 if self._yscale_mode == "log" else 0)
+        glUniform1f(self._u_f_min, self._freq_min)
+        glUniform1f(self._u_f_max, self._freq_max)
+        glUniform1i(self._u_filled_cols, self._stream_filled)
+        glUniform1i(self._u_total_cols, self._stream_total)
 
         glBindVertexArray(self._vao)
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
@@ -724,7 +809,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F,
                      n_frames, n_freqs, 0,
-                     GL_RED, GL_FLOAT, data.tobytes())
+                     GL_RED, GL_FLOAT, data)
         glBindTexture(GL_TEXTURE_2D, 0)
 
     def _upload_lut(self) -> None:
