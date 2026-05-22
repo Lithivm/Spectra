@@ -1,6 +1,7 @@
 # Spectra
 
 > A modern OpenGL-rendered spectrogram analyzer for music enthusiasts and HiFi listeners
+> 
 > 一款面向音乐爱好者与 HiFi 发烧友的现代化频谱分析工具
 
 ![screenshot](demo.jpg)
