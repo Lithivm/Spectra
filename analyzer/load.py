@@ -74,13 +74,10 @@ def _decode_with_av(filepath: Path) -> tuple[np.ndarray, int] | None:
                 # 统一转为 float32
                 if arr.dtype != np.float32:
                     arr = arr.astype(np.float32)
-                    # 整数格式需要归一化到 [-1, 1]
-                    if frame.format.name in ('s16', 's16p'):
-                        arr /= 32768.0
-                    elif frame.format.name in ('s32', 's32p'):
-                        arr /= 2147483648.0
-                    elif frame.format.name in ('s64', 's64p'):
-                        arr /= 9223372036854775808.0
+                    # 整数格式归一化: 用 bits 替代手工枚举格式名，覆盖 s16/s24/s32/s64 等所有位深
+                    fmt_name = frame.format.name
+                    if not fmt_name.startswith(('flt', 'dbl')):
+                        arr /= float(1 << (frame.format.bits - 1))
                 chunks.append(arr)
 
             if not chunks:

@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 from typing import Any
 
-from PyQt6.QtCore import QThread, Qt, pyqtSignal
+from PyQt6.QtCore import QThread, Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor, QPainter
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QHBoxLayout, QVBoxLayout,
@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 )
 
 
+from ui.playback_engine import PlaybackEngine
 from analyzer.core import AudioAnalyzer, _stft_cache, _stft_lock
 from analyzer.palette import PALETTE
 from analyzer import is_audio_file, SUPPORTED_EXTENSIONS
@@ -305,8 +306,8 @@ class _BatchWorker(QThread):
                 row = flatten_analysis(md, qa, fp)
                 results.append(row)
                 self.progress.emit(i + 1, fp.name, True)
-            except Exception:
-                results.append({"filename": fp.name, "filepath": str(fp)})
+            except Exception as e:
+                results.append({"filename": fp.name, "filepath": str(fp), "error": str(e)})
                 self.progress.emit(i + 1, fp.name, False)
         self.finished.emit(results)
 
@@ -333,6 +334,12 @@ class MainWindow(QMainWindow):
         self._fft_size = 8192
         self._mode = "standard"
 
+        self._playback = PlaybackEngine(self)
+        self._playback_timer = QTimer(self)
+        self._playback_timer.setInterval(30)
+        self._playback_timer.timeout.connect(self._on_playback_tick)
+        self._playback_timer.start()
+
         self.setStyleSheet(APP_STYLESHEET)
         self._setup_ui()
 
@@ -356,11 +363,11 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(self._make_toolbar())
 
-        # 波形卡片
+        # 波形卡片 — left/right margins align with spectrogram (y-axis + colorbar)
         wave_card = _card(radius=10)
         wave_card.setFixedHeight(130)
         wl = QVBoxLayout(wave_card)
-        wl.setContentsMargins(0, 0, 0, 0)
+        wl.setContentsMargins(36, 0, 36, 0)
         self._wave = WaveformWidget()
         wl.addWidget(self._wave)
         left_layout.addWidget(wave_card)
@@ -381,7 +388,7 @@ class MainWindow(QMainWindow):
         _grid.setColumnMinimumWidth(0, SIDE)
         _grid.setColumnStretch(0, 0)
         _grid.setColumnStretch(1, 1)
-        _grid.setColumnMinimumWidth(2, 48)
+        _grid.setColumnMinimumWidth(2, 36)
         _grid.setColumnStretch(2, 0)
 
         _grid.setRowMinimumHeight(0, SIDE)
@@ -407,7 +414,7 @@ class MainWindow(QMainWindow):
         _grid.addWidget(self._spec, 1, 1)
 
         self._colorbar = _ColorBarWidget()
-        self._colorbar.setFixedWidth(48)
+        self._colorbar.setFixedWidth(36)
         self._colorbar.set_data(self._spec._lut_np)
         _grid.addWidget(self._colorbar, 0, 2, 3, 1)
 
@@ -428,6 +435,14 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self._meta)
 
         self._spec.set_palette("inferno")
+
+        # Wire up seek signals from waveform + spectrogram → playback engine
+        self._wave.seekRequested.connect(self._playback.seek)
+        self._spec.seekRequested.connect(self._playback.seek)
+        # Single playhead position sync — drag on either widget updates both
+        self._wave._on_playhead_drag = self._on_playhead_drag
+        self._spec._on_playhead_drag = self._on_playhead_drag
+        self._playback.state_changed.connect(self._on_playback_state)
 
         on_lang_change(self._retranslate)
 
@@ -460,6 +475,28 @@ class MainWindow(QMainWindow):
         self._open_btn.setFixedWidth(100)
         self._open_btn.clicked.connect(self._on_open_file)
         layout.addWidget(self._open_btn)
+
+        # 播放标签
+        self._play_label = QLabel(t("播放", "Play"))
+        self._play_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px; background: transparent; border: none;")
+        layout.addWidget(self._play_label)
+
+        # Play / Pause
+        self._play_btn = QPushButton("▶")
+        self._play_btn.setFixedSize(36, 30)
+        self._play_btn.setToolTip(t("播放/暂停", "Play / Pause"))
+        self._play_btn.setStyleSheet(f"""
+            QPushButton {{
+                font-size: 14px; font-weight: bold;
+                color: {TEXT_PRI}; background: #222526;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 0px 0px 2px 0px;
+            }}
+            QPushButton:hover {{ border-color: {ACCENT}; background: #2a2d2f; }}
+            QPushButton:pressed {{ background: #1a1c1d; }}
+        """)
+        self._play_btn.clicked.connect(self._on_playback_toggle)
+        layout.addWidget(self._play_btn)
 
         layout.addStretch()
 
@@ -674,12 +711,17 @@ class MainWindow(QMainWindow):
         self._quality_worker.start()
 
         t0 = time.perf_counter()
-        self._wave.set_audio({
-            'waveform': analyzer.waveform,
-            'sample_rate': analyzer.sample_rate,
-            'duration': analyzer.duration,
-        })
+        self._wave.set_audio(
+            analyzer.waveform,
+            analyzer.sample_rate,
+            analyzer.duration,
+        )
         logger.debug("波形渲染: %.2fs", time.perf_counter() - t0)
+
+        self._playback.load(analyzer.waveform, analyzer.sample_rate)
+        self._wave.set_playhead(0.0)
+        if self._spec is not None:
+            self._spec.set_playhead(0.0)
 
         path = analyzer.filepath
         self.setWindowTitle(f"Spectra  —  {path.name}")
@@ -751,14 +793,58 @@ class MainWindow(QMainWindow):
 
     def _hold_ref(self, worker: QThread) -> None:
         """Keep *worker* Python wrapper alive so GC can't __del__+wait()
-        a live C++ thread.  Finished zombies are purged lazily."""
+        a live C++ thread. Automatically cleaned up on finished."""
         if not hasattr(self, '_zombies'):
             self._zombies: list[QThread] = []
+        if worker.isRunning():
+            self._zombies.append(worker)
+            worker.finished.connect(lambda w=worker: self._remove_zombie(w))
+
+    def _remove_zombie(self, worker: QThread) -> None:
         try:
-            self._zombies = [z for z in self._zombies if z.isRunning()]
-        except RuntimeError:
+            self._zombies.remove(worker)
+        except (RuntimeError, ValueError):
             pass
-        self._zombies.append(worker)
+
+    def _on_playhead_drag(self, seconds: float) -> None:
+        """Sync playhead across both widgets during drag.
+        Only update engine position when NOT playing — during playback,
+        the seek-on-release handles it, avoiding callback interference.
+        """
+        if not self._playback.is_playing:
+            self._playback.track_position(seconds)
+        self._wave.playhead_pos = seconds
+        self._spec.playhead_pos = seconds
+        self._wave.update()
+        self._spec.update()
+
+    def _on_playback_tick(self) -> None:
+        """Sync waveform + spectrogram playheads to DAC position."""
+        if not self._playback.is_playing:
+            return
+        if getattr(self._wave, '_dragging', False) or getattr(self._spec, '_dragging', False):
+            return  # don't fight the user's drag
+        pos = self._playback.get_position()
+        if self._wave is not None:
+            self._wave.set_playhead(pos)
+        if self._spec is not None:
+            self._spec.set_playhead(pos)
+
+    def _on_playback_toggle(self) -> None:
+        self._playback.toggle()
+
+    def _on_playback_state(self, state: str) -> None:
+        # Use engine's actual state instead of the signal parameter to avoid
+        # stale queued signals (from _on_stream_finished) overwriting current state.
+        actual = self._playback.state
+        if actual == "playing":
+            self._play_btn.setText("‖")  # pause symbol
+        else:
+            self._play_btn.setText("▶")  # play symbol
+            if actual == "stopped":
+                self._wave.set_playhead(0.0)
+                if self._spec is not None:
+                    self._spec.set_playhead(0.0)
 
     @safe_slot
     def _on_quality_done(self, qa: Any) -> None:
@@ -854,6 +940,7 @@ class MainWindow(QMainWindow):
         self._pal_label.setText(t("调色板", "Palette"))
         self._mode_label.setText(t("模式", "Mode"))
         self._yscale_label.setText(t("刻度", "Scale"))
+        self._play_label.setText(t("播放", "Play"))
         if not self._current_path:
             self._status_label.setText(t("就绪", "Ready"))
         self.setWindowTitle("Spectra")
@@ -868,5 +955,4 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _is_audio(path: str) -> bool:
-        from analyzer.load import is_audio_file
         return is_audio_file(path)

@@ -9,6 +9,8 @@ a = Analysis(
     datas=[
         *collect_data_files('mutagen'),
         ('assets/logo.png', 'assets'),
+        ('ui/shaders/spectrogram.vert', 'ui/shaders'),
+        ('ui/shaders/spectrogram.frag', 'ui/shaders'),
     ],
     hiddenimports=[
         'pyloudnorm',
@@ -17,7 +19,7 @@ a = Analysis(
         'pyfftw.interfaces.scipy_fft',
         'scipy.signal',
         'scipy.special.cython_special',
-        'sklearn.utils._cython_blas',
+        'sklearn.utils._cython_blas',  # internal API — verify on sklearn upgrades
         'soxr',
     ],
     hookspath=[],

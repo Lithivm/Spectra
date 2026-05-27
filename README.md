@@ -13,12 +13,13 @@
 | English | 中文 |
 |---------|------|
 | **OpenGL Spectrogram** — fragment shader with real-time colormap switching (12 palettes) | **OpenGL 频谱图** — 片段着色器渲染，实时切换 12 种色板 |
-| **Quality Analysis** — clipping detection, upsampling check, dynamic range (DR), LUFS (EBU R128), true peak, LRA | **质量分析** — 削波检测、升频检测、动态范围、响度 (LUFS)、真峰值、响度范围 |
+| **Audio Playback** — play/pause with synchronized playhead on waveform + spectrogram | **音频播放** — 播放/暂停，波形与频谱同步进度指示 |
+| **Draggable Playhead** — click or drag to seek, always visible at current position | **可拖拽进度线** — 点击或拖拽跳转，始终显示当前位置 |
+| **Quality Analysis** — clipping detection, upsampling check, dynamic range (DR), LUFS (EBU R128), true peak, LRA | **质量分析** — 削波检测、升频检测、动态范围、响度 (LUFS)、真峰值 |
 | **Multi-resolution STFT** — standard, multi-band, and phase-reassigned (iZotope RX style) | **多分辨率 STFT** — 标准、多频段、相位重分配三种模式 |
 | **Flexible Y-axis** — linear, logarithmic, mel, and bark frequency scales | **灵活 Y 轴** — 线性、对数、mel、bark 四种频率刻度 |
-| **Waveform Preview** — down-sampled envelope with mirrored fill | **波形预览** — 降采样包络镜像填充 |
+| **Waveform Preview** — down-sampled envelope aligned with spectrogram | **波形预览** — 降采样包络，与频谱上下对齐 |
 | **Drag & Drop** — WAV, FLAC, MP3, M4A, OGG, AAC, OPUS, APE, AIFF, WMA, TTA | **拖放加载** — 支持 11 种常见音频格式 |
-| **Colorbar** — dB-scale gradient synced to active palette | **色条联动** — dB 渐变色条随色板同步更新 |
 | **Bilingual UI** — Chinese / English one-click toggle | **双语界面** — 工具栏一键切换中文 / 英文 |
 | **Batch Analysis** — process folders, export to CSV | **批量分析** — 批量处理文件夹，导出 CSV |
 | **Screenshot Export** — save spectrogram view as PNG | **截图导出** — 保存当前频谱视图为 PNG |
@@ -68,12 +69,14 @@ python main.py
 ```
 
 Drag an audio file into the window, or click **Open File** (打开文件).
-拖入音频文件，或点击 **打开文件** 按钮。
+
+拖入音频文件，或点击 **打开文件** 按钮。Click **▶** (播放) to preview audio.
 
 ### Pre-built · 打包版本
 
-Download `Spectra-windows.zip` from [Releases](https://github.com/Lithivm/Spectra/releases), extract, and run `Spectra.exe`.
-从 Releases 下载 `Spectra-windows.zip`，解压后运行 `Spectra.exe`。
+Download `Spectra-v0.2.0-windows.zip` from [Releases](https://github.com/Lithivm/Spectra/releases), extract, and run `Spectra.exe`.
+
+从 Releases 下载 `Spectra-v0.2.0-windows.zip`，解压后运行 `Spectra.exe`。
 
 ## Build · 构建
 
@@ -110,7 +113,10 @@ Spectra/
 ├── main.py                     # Entry point + crash logger
 ├── lang.py                      # Bilingual (zh/en) toggle
 ├── analyzer/
-│   ├── core.py                  # AudioAnalyzer: STFT, quality, LUFS
+│   ├── core.py                  # AudioAnalyzer facade class
+│   ├── _state.py                # FFTW wisdom + STFT cache (LRU)
+│   ├── spectrum.py              # _SpectrumMixin — STFT, reassigned, mel
+│   ├── quality.py               # _QualityMixin — clipping, LUFS, DR
 │   ├── load.py                  # PyAV multi-format decoder
 │   ├── metadata.py              # Tag extraction via mutagen
 │   ├── palette.py               # Colormap registry (zero-dependency)
@@ -118,10 +124,14 @@ Spectra/
 ├── ui/
 │   ├── main_window.py           # Main window, toolbar, workers, safe_slot
 │   ├── spectrogram_widget.py    # QOpenGLWidget renderer + axis/colorbar
-│   ├── waveform_widget.py       # Waveform envelope display
+│   ├── waveform_widget.py       # Waveform envelope + playhead
 │   ├── metadata_panel.py        # File info + quality analysis panel
+│   ├── playback_engine.py       # Audio playback via sounddevice
 │   ├── batch_dialog.py          # Batch progress dialog
-│   └── styles.py                # Color tokens for dark theme
+│   ├── styles.py                # Color tokens for dark theme
+│   └── shaders/
+│       ├── spectrogram.vert     # GLSL vertex shader
+│       └── spectrogram.frag     # GLSL fragment shader
 └── assets/
     ├── logo.png
     └── logo.ico
@@ -136,6 +146,7 @@ Spectra/
 | **pyFFTW** | FFTW bindings (faster FFT) |
 | **pyloudnorm** | EBU R128 loudness |
 | **PyAV** | Audio decoding (libav) |
+| **sounddevice** | Audio playback (PortAudio) |
 | **mutagen** | Metadata extraction |
 | **scipy** | Signal processing |
 | **numpy** | Numerical arrays |
@@ -143,9 +154,10 @@ Spectra/
 
 ## Troubleshooting · 故障排查
 
-If the exe crashes, check `%USERPROFILE%\.spectra\crash.log` for details. All uncaught exceptions are logged there.
+If the app crashes, check `%USERPROFILE%\.spectra\crash.log` for details.
+All uncaught exceptions and worker failures are logged there.
 
-如果 exe 崩溃，查看 `%USERPROFILE%\.spectra\crash.log` 获取详细错误信息。
+如果应用崩溃，查看 `%USERPROFILE%\.spectra\crash.log` 获取详细错误信息。
 
 ## License · 许可证
 
@@ -153,4 +165,4 @@ MIT
 
 ---
 
-*Built with PyQt6, OpenGL, librosa, 和 pyFFTW.*
+*Built with PyQt6, OpenGL, librosa, pyFFTW, and sounddevice.*

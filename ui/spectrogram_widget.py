@@ -8,14 +8,29 @@ Key features:
 - QImage-based blit rendering → single-pass, no per-pixel drawRect
 """
 
+import os
+import sys
 import numpy as np
 from PyQt6.QtWidgets import QWidget, QLabel
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QImage
-from PyQt6.QtCore import Qt, QRectF, QPointF
+from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
 from lang import t
 from ui.styles import BORDER_MID, TEXT_DIM
+
+
+def _load_shader(name: str) -> str:
+    """Load a GLSL shader source file, with PyInstaller support."""
+    # Try relative to this file's directory first (dev and --onedir)
+    base = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base, "shaders", name)
+    if not os.path.exists(path):
+        # PyInstaller --onefile: look under sys._MEIPASS
+        base2 = os.path.join(sys._MEIPASS, "ui", "shaders")
+        path = os.path.join(base2, name)
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
 
 # ── Palette anchor stops ──────────────────────────────────────────
 _PALETTE_STOPS: dict[str, list[tuple[float, tuple[float, float, float]]]] = {
@@ -359,8 +374,8 @@ class _ColorBarWidget(QWidget):
             painter.end()
             return
 
-        bar_x = 4
-        bar_w = 14
+        bar_x = 2
+        bar_w = 7
 
         # Gradient bar — use scaled QImage instead of per-pixel fillRect
         if self._bar_img is None:
@@ -409,6 +424,8 @@ class SpectrogramGLWidget(QOpenGLWidget):
     after initial upload.
     """
 
+    seekRequested = pyqtSignal(float)  # seconds
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._data: np.ndarray | None = None       # (n_freqs, n_frames) float32 dB
@@ -445,6 +462,10 @@ class SpectrogramGLWidget(QOpenGLWidget):
         # ── Cutoff annotation ─────────────────────────────────────
         self._cutoff_hz: float | None = None
         self._show_cutoff = True
+
+        # ── Playhead ──────────────────────────────────────────────
+        self.playhead_pos: float = -1.0  # seconds, -1 = hidden; set by main_window
+        self._on_playhead_drag: callable | None = None
 
         # ── Streaming state ────────────────────────────────────────
         self._is_streaming = False
@@ -530,6 +551,12 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._cutoff_hz = hz
         self.update()
 
+    def set_playhead(self, seconds: float) -> None:
+        """Set playhead position — called by main_window only."""
+        if seconds != self.playhead_pos:
+            self.playhead_pos = seconds
+            self.update()
+
     # ── LUT ─────────────────────────────────────────────────────────
 
     # ── Progress bar ────────────────────────────────────────────────────
@@ -604,62 +631,8 @@ class SpectrogramGLWidget(QOpenGLWidget):
         glClearColor(0, 0, 0, 1)
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
 
-        vert_src = """
-        #version 330 core
-        const vec2 VERTS[4] = vec2[](
-            vec2(-1,-1), vec2(1,-1), vec2(-1,1), vec2(1,1)
-        );
-        const vec2 UVS[4] = vec2[](
-            vec2(0,0), vec2(1,0), vec2(0,1), vec2(1,1)
-        );
-        out vec2 uv;
-        void main() {
-            uv = UVS[gl_VertexID];
-            gl_Position = vec4(VERTS[gl_VertexID], 0, 1);
-        }
-        """
-
-        frag_src = """
-        #version 330 core
-        in vec2 uv;
-        out vec4 fragColor;
-        uniform sampler2D u_spec;
-        uniform sampler2D u_colormap;
-        uniform float u_vmin;
-        uniform float u_vmax;
-        uniform int u_log_scale;
-        uniform float u_f_min;
-        uniform float u_f_max;
-        uniform int u_filled_cols;
-        uniform int u_total_cols;
-
-        void main() {
-            // Gate: unfilled columns → pure black
-            int col_idx = int(uv.x * float(u_total_cols));
-            if (col_idx >= u_filled_cols) {
-                fragColor = vec4(0.0, 0.0, 0.0, 1.0);
-                return;
-            }
-
-            // Y-axis: log or linear
-            float y;
-            if (u_log_scale == 1) {
-                float f_min_safe = max(u_f_min, 1.0);
-                float f_val_log  = log(f_min_safe) + uv.y * (log(u_f_max) - log(f_min_safe));
-                float f_norm = (exp(f_val_log) - u_f_min) / (u_f_max - u_f_min);
-                y = clamp(f_norm, 0.0, 1.0);
-            } else {
-                y = uv.y;
-            }
-
-            float db = texture(u_spec, vec2(uv.x, y)).r;
-            float t = clamp((db - u_vmin) / (u_vmax - u_vmin), 0.0, 1.0);
-            t = pow(t, 0.5);
-            t = clamp((t - 0.15) / 0.7, 0.0, 1.0);
-
-            fragColor = texture(u_colormap, vec2(t, 0.5));
-        }
-        """
+        vert_src = _load_shader("spectrogram.vert")
+        frag_src = _load_shader("spectrogram.frag")
 
         def _compile_shader(src: str, shader_type: int) -> int:
             s = glCreateShader(shader_type)
@@ -692,6 +665,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._u_f_max        = glGetUniformLocation(self._gl_program, "u_f_max")
         self._u_filled_cols  = glGetUniformLocation(self._gl_program, "u_filled_cols")
         self._u_total_cols   = glGetUniformLocation(self._gl_program, "u_total_cols")
+        self._u_n_freqs      = glGetUniformLocation(self._gl_program, "u_n_freqs")
 
         self._vao = glGenVertexArrays(1)
 
@@ -704,11 +678,62 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
+        # Only create QPainter when there's an overlay to draw —
+        # avoids unnecessary OpenGL framebuffer resolves that cause flicker.
+        has_overlay = (
+            (self._show_cutoff and self._cutoff_hz is not None and self._cutoff_hz > 0)
+            or (self.playhead_pos >= 0 and self.duration > 0)
+        )
+        if not has_overlay:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self._show_cutoff and self._cutoff_hz is not None and self._cutoff_hz > 0:
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             self._paint_cutoff_overlay(painter)
-            painter.end()
+        if self.playhead_pos >= 0 and self.duration > 0:
+            self._paint_playhead(painter)
+        painter.end()
+
+    def _paint_playhead(self, painter: QPainter) -> None:
+        x = int(self.playhead_pos / self.duration * self.width()) if self.duration > 0 else 0
+        painter.setPen(QPen(QColor("#e8e6e2"), 1))
+        painter.drawLine(x, 0, x, self.height())
+
+    def mousePressEvent(self, event) -> None:
+        if (event.button() == Qt.MouseButton.LeftButton
+                and self.playhead_pos >= 0 and self.duration > 0):
+            px = int(self.playhead_pos / self.duration * self.width())
+            if abs(event.position().x() - px) <= 20:
+                self._dragging = True
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+                return
+        # Click anywhere on the spectrogram seeks immediately
+        if event.button() == Qt.MouseButton.LeftButton and self.duration > 0:
+            secs = max(0, min(event.position().x() / self.width(), 1.0)) * self.duration
+            self.playhead_pos = secs
+            self.seekRequested.emit(secs)
+            self.update()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if getattr(self, '_dragging', False) and self.duration > 0:
+            secs = max(0, min(event.position().x() / self.width(), 1.0)) * self.duration
+            self.playhead_pos = secs
+            if self._on_playhead_drag is not None:
+                self._on_playhead_drag(secs)
+            self.update()  # smooth visual drag, no seek signal
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if getattr(self, '_dragging', False) and event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            if self.duration > 0:
+                secs = max(0, min(event.position().x() / self.width(), 1.0)) * self.duration
+                self.seekRequested.emit(secs)  # single seek on release
+        else:
+            super().mouseReleaseEvent(event)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -721,20 +746,20 @@ class SpectrogramGLWidget(QOpenGLWidget):
         w = int(self.width() * self.devicePixelRatio())
         h = int(self.height() * self.devicePixelRatio())
 
-        # ── Streaming: allocate zero-filled texture on first frame ──
+        # ── Streaming: allocate noise-floor texture on first frame ──
         if self._stream_needs_realloc and self._is_streaming:
             n_freqs = len(self.frequencies) if self.frequencies is not None else 1025
             total_cols = self._stream_total
-            zeros = np.zeros((n_freqs, total_cols), dtype=np.float32)
+            blank = np.full((n_freqs, total_cols), -120.0, dtype=np.float32)
             glBindTexture(GL_TEXTURE_2D, self._tex_id)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
             glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F,
                          total_cols, n_freqs, 0,
-                         GL_RED, GL_FLOAT, zeros)
-            self._data = zeros
+                         GL_RED, GL_FLOAT, blank)
+            self._data = blank
             self._stream_needs_realloc = False
             glBindTexture(GL_TEXTURE_2D, 0)
 
@@ -746,12 +771,14 @@ class SpectrogramGLWidget(QOpenGLWidget):
         # ── Drain pending streaming blocks ──
         if self._pending_blocks:
             glBindTexture(GL_TEXTURE_2D, self._tex_id)
+            max_filled = self._stream_filled
             for c0, blk in self._pending_blocks:
                 blk = np.ascontiguousarray(blk, dtype=np.float32)
                 n_freqs, bw = blk.shape
                 glTexSubImage2D(GL_TEXTURE_2D, 0, c0, 0, bw, n_freqs,
                                GL_RED, GL_FLOAT, blk)
-                self._stream_filled = max(self._stream_filled, c0 + bw)
+                max_filled = max(max_filled, c0 + bw)
+            self._stream_filled = max_filled
             self._pending_blocks.clear()
             glBindTexture(GL_TEXTURE_2D, 0)
 
@@ -786,6 +813,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
         glUniform1f(self._u_f_max, self._freq_max)
         glUniform1i(self._u_filled_cols, self._stream_filled)
         glUniform1i(self._u_total_cols, self._stream_total)
+        glUniform1f(self._u_n_freqs, float(self._data.shape[0]) if self._data is not None else 1025.0)
 
         glBindVertexArray(self._vao)
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
@@ -803,8 +831,8 @@ class SpectrogramGLWidget(QOpenGLWidget):
         n_freqs, n_frames = data.shape
 
         glBindTexture(GL_TEXTURE_2D, self._tex_id)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F,

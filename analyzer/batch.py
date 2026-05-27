@@ -41,6 +41,19 @@ def flatten_analysis(md: dict, qa: dict | None, filepath: Path) -> dict[str, Any
     row["genre"] = md.get("流派", "")
     row["track"] = md.get("音轨", "")
 
+    # Quality fields — always present, even with no qa data
+    row["peak_db"] = ""
+    row["rms"] = ""
+    row["clipping_count"] = 0
+    row["clipping_longest_ms"] = 0
+    row["upsampling_ok"] = True
+    row["cutoff_hz"] = ""
+    row["dynamic_range_db"] = 0
+    row["integrated_lufs"] = ""
+    row["short_term_lufs"] = ""
+    row["lra_lu"] = ""
+    row["true_peak_db"] = ""
+
     if qa:
         row["peak_db"] = qa.get("peak_db", "")
         row["rms"] = qa.get("rms", "")

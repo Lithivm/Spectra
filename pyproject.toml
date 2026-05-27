@@ -13,11 +13,11 @@ dependencies = [
     "librosa>=0.10",
     "numpy>=1.24",
     "scipy>=1.11",
-    "matplotlib>=3.7",
     "soundfile>=0.12",
     "pyfftw>=0.14",
     "av>=12.0",
     "pyloudnorm>=0.1.0",
+    "sounddevice>=0.4",
 ]
 
 [project.gui-scripts]

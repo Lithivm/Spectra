@@ -4,7 +4,8 @@ Usage:
     from lang import t, LANG, toggle_lang, on_lang_change
 
     label = t("中文", "English")
-    on_lang_change(lambda lang: some_widget.setText(t("中文", "English")))
+    unsub = on_lang_change(lambda lang: some_widget.setText(t("中文", "English")))
+    # When the widget is destroyed, call unsub() to prevent leaks
 """
 
 LANG = "zh"
@@ -24,5 +25,13 @@ def toggle_lang() -> str:
     return LANG
 
 
-def on_lang_change(cb) -> None:
+def on_lang_change(cb):
     _listeners.append(cb)
+
+    def unsubscribe():
+        try:
+            _listeners.remove(cb)
+        except ValueError:
+            pass
+
+    return unsubscribe
