@@ -1,7 +1,6 @@
 import sys
 import pytest
-from PyQt6.QtCore import QMimeData
-from PyQt6.QtWidgets import QApplication, QFileDialog, QWidget, QLabel
+from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -62,7 +61,6 @@ class TestDragDrop:
         assert isinstance(result, tuple)
 
     def test_palette_switch(self, app):
-        from ui.main_window import MainWindow
         mw = _build_main_window(app)
         mw._on_palette_changed("viridis")
         assert mw._current_palette == "viridis"
