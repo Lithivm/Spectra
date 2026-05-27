@@ -17,7 +17,6 @@ librosa.set_fftlib(fftw_scipy)
 
 from lang import t
 
-from ._state import _stft_cache, _stft_lock  # re-exported for ui/ compatibility
 from .load import load_audio
 from .metadata import get_metadata
 from .spectrum import _SpectrumMixin

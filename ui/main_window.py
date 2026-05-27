@@ -4,22 +4,19 @@ from __future__ import annotations
 
 import itertools
 import logging
-import sys
 import time
-import traceback
 from pathlib import Path
 
 import numpy as np
 from typing import Any
 
 from PyQt6.QtCore import QThread, Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor, QPainter
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor
 from PyQt6.QtWidgets import (
-    QApplication, QFileDialog, QHBoxLayout, QVBoxLayout,
+    QFileDialog, QHBoxLayout, QVBoxLayout,
     QLabel, QMainWindow, QMessageBox, QStatusBar, QWidget,
     QFrame, QPushButton, QComboBox, QSizePolicy,
     QGraphicsDropShadowEffect, QGridLayout,
-    QProgressBar,
 )
 
 
@@ -648,7 +645,6 @@ class MainWindow(QMainWindow):
 
     @safe_slot
     def _on_spectrum_done(self, freqs: Any, times: Any, db: Any, mode: str = "multi") -> None:
-        t_set = time.perf_counter()
         self._spec.set_audio({
             'spectrogram': db,
             'fft_freqs': freqs,

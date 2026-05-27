@@ -18,7 +18,6 @@ from collections import OrderedDict
 # import time.
 import numpy as np
 import pyfftw
-import pyfftw.interfaces.scipy_fft as fftw_scipy
 
 # ---------------------------------------------------------------------------
 # FFTW wisdom persistence (lazy — loaded on first STFT call)

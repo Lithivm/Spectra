@@ -15,7 +15,7 @@ from lang import t, on_lang_change
 
 logger = logging.getLogger(__name__)
 from ui.styles import (
-    BG_BASE, BG_SURFACE, BG_RAISED,
+    BG_SURFACE, BG_RAISED,
     BORDER_SUB, BORDER_MID,
     ACCENT, ACCENT_GRN, ACCENT_RED, ACCENT_AMB,
     TEXT_PRI, TEXT_SEC, TEXT_DIM,

@@ -142,7 +142,6 @@ class _SpectrumMixin:
 
         audio = self._mono
         sr = self.sample_rate
-        N_orig = len(audio)
         n_fft_w = win_length or n_fft
         n_freqs = n_fft // 2 + 1
 

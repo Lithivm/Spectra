@@ -17,7 +17,6 @@ from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
 from lang import t
-from ui.styles import BORDER_MID, TEXT_DIM
 
 
 def _load_shader(name: str) -> str:
@@ -301,8 +300,8 @@ class _XAxisWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
         SIDE = 36
-        l, r = SIDE, w - SIDE
-        rw = r - l
+        left, right = SIDE, w - SIDE
+        rw = right - left
         if rw <= 0:
             return
 

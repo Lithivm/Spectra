@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import math
-from typing import Optional
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QPaintEvent, QPainter
-from PyQt6.QtWidgets import QProgressBar, QWidget
+from PyQt6.QtWidgets import QWidget
 
 
 class ProgressBar(QWidget):

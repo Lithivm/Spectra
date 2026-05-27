@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 from lang import t
 from ui.styles import (
     BG_SURFACE, BG_RAISED, BORDER_SUB, BORDER_MID,
-    TEXT_PRI, TEXT_SEC, TEXT_DIM, ACCENT,
+    TEXT_PRI, TEXT_SEC, ACCENT,
 )
 
 
@@ -110,8 +110,8 @@ class BatchProgressDialog(QDialog):
         self._export_btn = QPushButton(t("导出CSV", "Export CSV"))
         self._export_btn.setEnabled(False)
         self._export_btn.setObjectName("primary")
-        self._export_btn.setStyleSheet(f"""
-            QPushButton#primary {{
+        self._export_btn.setStyleSheet("""
+            QPushButton#primary {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                     stop:0 #E0B55A, stop:1 #C89A3A);
                 border: none;
@@ -119,7 +119,7 @@ class BatchProgressDialog(QDialog):
                 font-weight: 600;
                 border-radius: 6px;
                 padding: 6px 16px;
-            }}
+            }
         """)
         btn_layout.addWidget(self._export_btn)
         layout.addLayout(btn_layout)

@@ -186,7 +186,8 @@ class TestLang:
         from lang import t, LANG
         LANG_old = LANG
         try:
-            import lang; lang.LANG = "zh"
+            import lang
+            lang.LANG = "zh"
             assert t("中文", "English") == "中文"
         finally:
             lang.LANG = LANG_old
@@ -195,7 +196,8 @@ class TestLang:
         from lang import t, LANG
         LANG_old = LANG
         try:
-            import lang; lang.LANG = "en"
+            import lang
+            lang.LANG = "en"
             assert t("中文", "English") == "English"
         finally:
             lang.LANG = LANG_old
@@ -204,7 +206,8 @@ class TestLang:
         from lang import toggle_lang, LANG
         LANG_old = LANG
         try:
-            import lang; lang.LANG = "zh"
+            import lang
+            lang.LANG = "zh"
             new = toggle_lang()
             assert new == "en"
             new = toggle_lang()
@@ -216,7 +219,7 @@ class TestLang:
         from lang import on_lang_change
 
         calls = []
-        unsub = on_lang_change(lambda l: calls.append(l))
+        unsub = on_lang_change(lambda lang_code: calls.append(lang_code))
         assert callable(unsub)
 
         unsub()  # should not raise
