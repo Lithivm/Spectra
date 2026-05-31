@@ -457,6 +457,16 @@ class MainWindow(QMainWindow):
 
         self._spec.set_palette("inferno")
 
+        # Floating cursor info label — child of spec_card, positioned at cursor x
+        self._cursor_label = QLabel(spec_card)
+        self._cursor_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cursor_label.setStyleSheet(
+            f"color: {TEXT_PRI}; font-size: 11px; font-family: 'Consolas', monospace;"
+            f" background: transparent; border: none;"
+        )
+        self._cursor_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._cursor_label.hide()
+
         # Wire up seek signals from waveform + spectrogram → playback engine
         self._wave.seekRequested.connect(self._playback.seek)
         self._spec.seekRequested.connect(self._playback.seek)
@@ -464,6 +474,10 @@ class MainWindow(QMainWindow):
         self._wave._on_playhead_drag = self._on_playhead_drag
         self._spec._on_playhead_drag = self._on_playhead_drag
         self._playback.state_changed.connect(self._on_playback_state)
+
+        # Cursor coordinate info — floating label above spectrogram
+        self._spec.cursor_info.connect(self._on_cursor_info)
+        self._spec.cursor_left.connect(self._on_cursor_left)
 
         on_lang_change(self._retranslate)
 
@@ -865,6 +879,38 @@ class MainWindow(QMainWindow):
                 self._wave.set_playhead(0.0)
                 if self._spec is not None:
                     self._spec.set_playhead(0.0)
+
+    @safe_slot
+    def _on_cursor_info(self, time_s: float, freq: float, db: float, px: int) -> None:
+        """Show cursor coordinates in floating label above spectrogram."""
+        if freq >= 1000:
+            freq_str = f"{freq / 1000:.2f} kHz"
+        else:
+            freq_str = f"{freq:.1f} Hz"
+        if time_s < 1:
+            time_str = f"{time_s * 1000:.1f} ms"
+        elif time_s < 60:
+            time_str = f"{time_s:.3f} s"
+        else:
+            m = int(time_s // 60)
+            s = time_s % 60
+            time_str = f"{m}m{s:05.2f}s"
+        text = f"{time_str}  ·  {freq_str}  ·  {db:.1f} dB"
+        self._cursor_label.setText(text)
+        self._cursor_label.adjustSize()
+        # Position: center on cursor x, vertically centered in filename row
+        SIDE = 36  # YAxis width
+        label_x = SIDE + px - self._cursor_label.width() // 2
+        label_y = (SIDE - self._cursor_label.height()) // 2
+        self._cursor_label.move(max(0, label_x), max(0, label_y))
+        self._cursor_label.show()
+        self._filename_widget.hide()
+
+    @safe_slot
+    def _on_cursor_left(self) -> None:
+        """Restore filename when cursor leaves spectrogram."""
+        self._cursor_label.hide()
+        self._filename_widget.show()
 
     @safe_slot
     def _on_quality_done(self, qa: Any) -> None:

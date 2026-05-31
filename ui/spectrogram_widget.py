@@ -311,7 +311,7 @@ class _XAxisWidget(QWidget):
         num_ticks = min(8, max(4, rw // 80))
         for i in range(num_ticks):
             t = (i / (num_ticks - 1)) * self._duration if num_ticks > 1 else 0
-            x = l + int((i / (num_ticks - 1)) * rw) if num_ticks > 1 else l
+            x = left + int((i / (num_ticks - 1)) * rw) if num_ticks > 1 else left
 
             # Tick mark (top edge)
             painter.setPen(QColor(150, 145, 140))
@@ -424,9 +424,12 @@ class SpectrogramGLWidget(QOpenGLWidget):
     """
 
     seekRequested = pyqtSignal(float)  # seconds
+    cursor_info = pyqtSignal(float, float, float, int)  # time, freq, db, pixel_x
+    cursor_left = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setMouseTracking(True)
         self._data: np.ndarray | None = None       # (n_freqs, n_frames) float32 dB
         self._tex_id: int | None = None
         self._gl_program: int | None = None
@@ -465,6 +468,9 @@ class SpectrogramGLWidget(QOpenGLWidget):
         # ── Playhead ──────────────────────────────────────────────
         self.playhead_pos: float = -1.0  # seconds, -1 = hidden; set by main_window
         self._on_playhead_drag: callable | None = None
+
+        # ── Cursor hover ──────────────────────────────────────────
+        self._cursor_x: int = -1  # pixel x, -1 = hidden
 
         # ── Streaming state ────────────────────────────────────────
         self._is_streaming = False
@@ -691,12 +697,78 @@ class SpectrogramGLWidget(QOpenGLWidget):
             self._paint_cutoff_overlay(painter)
         if self.playhead_pos >= 0 and self.duration > 0:
             self._paint_playhead(painter)
+        self._paint_cursor(painter)
         painter.end()
 
     def _paint_playhead(self, painter: QPainter) -> None:
         x = int(self.playhead_pos / self.duration * self.width()) if self.duration > 0 else 0
         painter.setPen(QPen(QColor("#e8e6e2"), 1))
         painter.drawLine(x, 0, x, self.height())
+
+    def _paint_cursor(self, painter: QPainter) -> None:
+        if self._cursor_x < 0:
+            return
+        pen = QPen(QColor(255, 255, 255, 80), 1, Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.drawLine(self._cursor_x, 0, self._cursor_x, self.height())
+
+    # ── Cursor info mapping ────────────────────────────────────────
+
+    def _pixel_to_freq(self, pixel_y: float) -> float:
+        """Map a pixel y-coordinate to frequency (Hz) using current y-scale."""
+        h = self.height()
+        if h <= 0 or self.frequencies is None or len(self.frequencies) < 2:
+            return 0.0
+        # GL UV y: top=1, bottom=0
+        y_ratio = max(0.0, min(1.0, 1.0 - pixel_y / h))
+        f_min = self._freq_min
+        f_max = self._freq_max
+        mode = self._yscale_mode
+        if mode == "log":
+            if f_min <= 0:
+                f_min = 1.0
+            return f_min * (f_max / f_min) ** y_ratio
+        elif mode == "mel":
+            mel_min = 2595.0 * np.log10(1.0 + f_min / 700.0)
+            mel_max = 2595.0 * np.log10(1.0 + f_max / 700.0)
+            mel = mel_min + y_ratio * (mel_max - mel_min)
+            return 700.0 * (10.0 ** (mel / 2595.0) - 1.0)
+        elif mode == "bark":
+            bark_min = 13.0 * np.arctan(0.00076 * f_min) + 3.5 * np.arctan((f_min / 7500.0) ** 2)
+            bark_max = 13.0 * np.arctan(0.00076 * f_max) + 3.5 * np.arctan((f_max / 7500.0) ** 2)
+            bark = bark_min + y_ratio * (bark_max - bark_min)
+            # Approximate inverse: iterate to find freq from bark
+            freq = f_min + y_ratio * (f_max - f_min)  # initial guess
+            for _ in range(8):
+                b = 13.0 * np.arctan(0.00076 * freq) + 3.5 * np.arctan((freq / 7500.0) ** 2)
+                db = 13.0 * 0.00076 / (1 + (0.00076 * freq) ** 2) + 3.5 * 2 * freq / 7500 ** 2 / (1 + (freq / 7500) ** 2)
+                if db < 1e-12:
+                    break
+                freq = freq - (b - bark) / db
+                freq = max(f_min, min(f_max, freq))
+            return freq
+        else:  # linear
+            return f_min + y_ratio * (f_max - f_min)
+
+    def _get_cursor_db(self, time_s: float, freq_hz: float) -> float:
+        """Sample the dB matrix at a given time/frequency coordinate."""
+        if self._data is None or self._data.size == 0:
+            return -120.0
+        n_freqs, n_frames = self._data.shape
+        # Time → frame index
+        if self.duration > 0:
+            t_idx = time_s / self.duration * (n_frames - 1)
+        else:
+            t_idx = 0.0
+        # Frequency → bin index
+        if self.frequencies is not None and len(self.frequencies) >= 2:
+            f_idx = np.interp(freq_hz, self.frequencies, np.arange(len(self.frequencies)))
+        else:
+            f_idx = freq_hz / (self._freq_max or 22050.0) * (n_freqs - 1)
+        # Bilinear sample
+        t0 = int(max(0, min(n_frames - 1, t_idx)))
+        f0 = int(max(0, min(n_freqs - 1, f_idx)))
+        return float(self._data[f0, t0])
 
     def mousePressEvent(self, event) -> None:
         if (event.button() == Qt.MouseButton.LeftButton
@@ -722,7 +794,23 @@ class SpectrogramGLWidget(QOpenGLWidget):
                 self._on_playhead_drag(secs)
             self.update()  # smooth visual drag, no seek signal
         else:
+            # Track cursor position and emit coordinate info
+            if self.duration > 0 and self.frequencies is not None:
+                pos = event.position()
+                px = int(pos.x())
+                self._cursor_x = px
+                secs = max(0, min(px / self.width(), 1.0)) * self.duration
+                freq = self._pixel_to_freq(pos.y())
+                db = self._get_cursor_db(secs, freq)
+                self.cursor_info.emit(secs, freq, db, px)
+                self.update()
             super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._cursor_x = -1
+        self.update()
+        self.cursor_left.emit()
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
         if getattr(self, '_dragging', False) and event.button() == Qt.MouseButton.LeftButton:
