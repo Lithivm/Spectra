@@ -10,8 +10,8 @@ from pathlib import Path
 import numpy as np
 from typing import Any
 
-from PyQt6.QtCore import QThread, Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor
+from PyQt6.QtCore import QThread, Qt, pyqtSignal, QTimer, QRectF, QPointF
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor, QPainter, QBrush
 from PyQt6.QtWidgets import (
     QFileDialog, QHBoxLayout, QVBoxLayout,
     QLabel, QMainWindow, QMessageBox, QStatusBar, QWidget,
@@ -158,6 +158,96 @@ def _card(radius: int = 12) -> QWidget:
         }}
     """)
     return w
+
+
+class _PlaybackSlider(QWidget):
+    """Custom playback progress bar with a draggable handle."""
+    sliderPressed = pyqtSignal()
+    sliderReleased = pyqtSignal()
+    valueChanged = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._value = 0       # 0–1000
+        self._maximum = 1000
+        self._dragging = False
+        self.setMouseTracking(True)
+        self._hover = False
+
+    def setRange(self, minimum: int, maximum: int) -> None:
+        self._maximum = maximum
+
+    def setValue(self, value: int) -> None:
+        if self._value != value and not self._dragging:
+            self._value = max(0, min(self._maximum, value))
+            self.update()
+
+    def value(self) -> int:
+        return self._value
+
+    def enterEvent(self, event) -> None:
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, event) -> None:
+        self._hover = False
+        self.update()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._update_from_mouse(event.position().x())
+            self.sliderPressed.emit()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._dragging:
+            self._update_from_mouse(event.position().x())
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._dragging and event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            self._update_from_mouse(event.position().x())
+            self.sliderReleased.emit()
+
+    def _update_from_mouse(self, x: float) -> None:
+        w = self.width()
+        if w <= 0:
+            return
+        ratio = max(0.0, min(1.0, x / w))
+        new_val = int(ratio * self._maximum)
+        if new_val != self._value:
+            self._value = new_val
+            self.valueChanged.emit(new_val)
+            self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        cy = h // 2
+
+        # Track
+        track_h = 4
+        track_rect = QRectF(0, cy - track_h // 2, w, track_h)
+        painter.setBrush(QColor(BORDER_MID))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(track_rect, 2, 2)
+
+        # Progress fill
+        if self._maximum > 0:
+            fill_w = int(w * self._value / self._maximum)
+            fill_rect = QRectF(0, cy - track_h // 2, fill_w, track_h)
+            painter.setBrush(QColor(ACCENT))
+            painter.drawRoundedRect(fill_rect, 2, 2)
+
+        # Handle
+        if self._maximum > 0:
+            handle_x = int(w * self._value / self._maximum)
+            handle_r = 6 if self._hover or self._dragging else 4
+            painter.setBrush(QColor("#F0EDE8"))
+            painter.drawEllipse(QPointF(handle_x, cy), handle_r, handle_r)
+
+        painter.end()
 
 
 def safe_slot(fn):
@@ -415,8 +505,10 @@ class MainWindow(QMainWindow):
         _grid.setRowMinimumHeight(0, SIDE)
         _grid.setRowStretch(0, 0)
         _grid.setRowStretch(1, 1)
-        _grid.setRowMinimumHeight(2, SIDE)
+        _grid.setRowMinimumHeight(2, 20)  # slider row
         _grid.setRowStretch(2, 0)
+        _grid.setRowMinimumHeight(3, SIDE)
+        _grid.setRowStretch(3, 0)
 
         # Row 0: filename
         self._filename_widget = QLabel()
@@ -442,7 +534,7 @@ class MainWindow(QMainWindow):
         # Row 2: X-axis spans all 3 columns, data offset-aligned to spectrogram
         self._x_axis = _XAxisWidget()
         self._x_axis.setFixedHeight(SIDE)
-        _grid.addWidget(self._x_axis, 2, 0, 1, 3)
+        _grid.addWidget(self._x_axis, 3, 0, 1, 3)
 
         sl.addLayout(_grid, 0)
 
@@ -467,13 +559,16 @@ class MainWindow(QMainWindow):
         self._cursor_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._cursor_label.hide()
 
-        # Wire up seek signals from waveform + spectrogram → playback engine
-        self._wave.seekRequested.connect(self._playback.seek)
-        self._spec.seekRequested.connect(self._playback.seek)
-        # Single playhead position sync — drag on either widget updates both
-        self._wave._on_playhead_drag = self._on_playhead_drag
-        self._spec._on_playhead_drag = self._on_playhead_drag
+        # Playback slider — between spectrogram and X-axis
+        self._progress_slider = _PlaybackSlider()
+        self._progress_slider.setFixedHeight(20)
+        self._progress_slider.sliderPressed.connect(self._on_slider_pressed)
+        self._progress_slider.sliderReleased.connect(self._on_slider_released)
+        self._progress_slider.valueChanged.connect(self._on_slider_changed)
+        _grid.addWidget(self._progress_slider, 2, 0, 1, 3)  # row 2, span all columns
+
         self._playback.state_changed.connect(self._on_playback_state)
+        self._slider_dragging = False
 
         # Cursor coordinate info — floating label above spectrogram
         self._spec.cursor_info.connect(self._on_cursor_info)
@@ -765,9 +860,8 @@ class MainWindow(QMainWindow):
         logger.debug("波形渲染: %.2fs", time.perf_counter() - t0)
 
         self._playback.load(analyzer.waveform, analyzer.sample_rate)
-        self._wave.set_playhead(0.0)
-        if self._spec is not None:
-            self._spec.set_playhead(0.0)
+        self._progress_slider.setRange(0, 1000)
+        self._progress_slider.setValue(0)
 
         path = analyzer.filepath
         self.setWindowTitle(f"Spectra  —  {path.name}")
@@ -852,45 +946,43 @@ class MainWindow(QMainWindow):
         except (RuntimeError, ValueError):
             pass
 
-    def _on_playhead_drag(self, seconds: float) -> None:
-        """Sync playhead across both widgets during drag.
-        Only update engine position when NOT playing — during playback,
-        the seek-on-release handles it, avoiding callback interference.
-        """
-        if not self._playback.is_playing:
-            self._playback.track_position(seconds)
-        self._wave.playhead_pos = seconds
-        self._spec.playhead_pos = seconds
-        self._wave.update()
-        self._spec.update()
-
     def _on_playback_tick(self) -> None:
-        """Sync waveform + spectrogram playheads to DAC position."""
-        if not self._playback.is_playing:
+        """Update slider position from DAC."""
+        if not self._playback.is_playing or self._slider_dragging:
             return
-        if getattr(self._wave, '_dragging', False) or getattr(self._spec, '_dragging', False):
-            return  # don't fight the user's drag
         pos = self._playback.get_position()
-        if self._wave is not None:
-            self._wave.set_playhead(pos)
-        if self._spec is not None:
-            self._spec.set_playhead(pos)
+        dur = self._analyzer.duration if self._analyzer else 0
+        if dur > 0:
+            self._progress_slider.setValue(int(pos / dur * 1000))
 
     def _on_playback_toggle(self) -> None:
         self._playback.toggle()
 
     def _on_playback_state(self, state: str) -> None:
-        # Use engine's actual state instead of the signal parameter to avoid
-        # stale queued signals (from _on_stream_finished) overwriting current state.
         actual = self._playback.state
         if actual == "playing":
-            self._play_btn.setText("‖")  # pause symbol
+            self._play_btn.setText("‖")
         else:
-            self._play_btn.setText("▶")  # play symbol
+            self._play_btn.setText("▶")
             if actual == "stopped":
-                self._wave.set_playhead(0.0)
-                if self._spec is not None:
-                    self._spec.set_playhead(0.0)
+                self._progress_slider.setValue(0)
+
+    def _on_slider_pressed(self) -> None:
+        self._slider_dragging = True
+
+    def _on_slider_released(self) -> None:
+        self._slider_dragging = False
+        self._seek_to_slider()
+
+    def _on_slider_changed(self, value: int) -> None:
+        if self._slider_dragging:
+            self._seek_to_slider()
+
+    def _seek_to_slider(self) -> None:
+        dur = self._analyzer.duration if self._analyzer else 0
+        if dur > 0:
+            secs = self._progress_slider.value() / 1000.0 * dur
+            self._playback.seek(secs)
 
     @safe_slot
     def _on_view_changed(self) -> None:

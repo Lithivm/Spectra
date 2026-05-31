@@ -442,7 +442,6 @@ class SpectrogramGLWidget(QOpenGLWidget):
     after initial upload.
     """
 
-    seekRequested = pyqtSignal(float)  # seconds
     cursor_info = pyqtSignal(float, float, float, int)  # time, freq, db, pixel_x
     cursor_left = pyqtSignal()
     view_changed = pyqtSignal()  # zoom changed, axes need update
@@ -484,10 +483,6 @@ class SpectrogramGLWidget(QOpenGLWidget):
         # ── Cutoff annotation ─────────────────────────────────────
         self._cutoff_hz: float | None = None
         self._show_cutoff = True
-
-        # ── Playhead ──────────────────────────────────────────────
-        self.playhead_pos: float = -1.0  # seconds, -1 = hidden; set by main_window
-        self._on_playhead_drag: callable | None = None
 
         # ── Cursor hover ──────────────────────────────────────────
         self._cursor_x: int = -1  # pixel x, -1 = hidden
@@ -581,12 +576,6 @@ class SpectrogramGLWidget(QOpenGLWidget):
     def set_cutoff_line(self, hz: float | None) -> None:
         self._cutoff_hz = hz
         self.update()
-
-    def set_playhead(self, seconds: float) -> None:
-        """Set playhead position — called by main_window only."""
-        if seconds != self.playhead_pos:
-            self.playhead_pos = seconds
-            self.update()
 
     # ── LUT ─────────────────────────────────────────────────────────
 
@@ -717,7 +706,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
         # avoids unnecessary OpenGL framebuffer resolves that cause flicker.
         has_overlay = (
             (self._show_cutoff and self._cutoff_hz is not None and self._cutoff_hz > 0)
-            or (self.playhead_pos >= 0 and self.duration > 0)
+            or self._cursor_x >= 0
         )
         if not has_overlay:
             return
@@ -725,16 +714,8 @@ class SpectrogramGLWidget(QOpenGLWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self._show_cutoff and self._cutoff_hz is not None and self._cutoff_hz > 0:
             self._paint_cutoff_overlay(painter)
-        if self.playhead_pos >= 0 and self.duration > 0:
-            self._paint_playhead(painter)
         self._paint_cursor(painter)
         painter.end()
-
-    def _paint_playhead(self, painter: QPainter) -> None:
-        x = self._time_to_px(self.playhead_pos)
-        if 0 <= x <= self.width():
-            painter.setPen(QPen(QColor("#e8e6e2"), 1))
-            painter.drawLine(x, 0, x, self.height())
 
     def _paint_cursor(self, painter: QPainter) -> None:
         if self._cursor_x < 0:
@@ -819,56 +800,26 @@ class SpectrogramGLWidget(QOpenGLWidget):
         return int(ratio * self.width())
 
     def mousePressEvent(self, event) -> None:
-        if (event.button() == Qt.MouseButton.LeftButton
-                and self.playhead_pos >= 0 and self.duration > 0):
-            px = self._time_to_px(self.playhead_pos)
-            if abs(event.position().x() - px) <= 20:
-                self._dragging = True
-                self.setCursor(Qt.CursorShape.SizeHorCursor)
-                return
-        # Click anywhere on the spectrogram seeks immediately
-        if event.button() == Qt.MouseButton.LeftButton and self.duration > 0:
-            secs = self._px_to_time(event.position().x())
-            self.playhead_pos = secs
-            self.seekRequested.emit(secs)
-            self.update()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
-        if getattr(self, '_dragging', False) and self.duration > 0:
-            secs = self._px_to_time(event.position().x())
-            self.playhead_pos = secs
-            if self._on_playhead_drag is not None:
-                self._on_playhead_drag(secs)
-            self.update()  # smooth visual drag, no seek signal
-        else:
-            # Track cursor position and emit coordinate info
-            if self.duration > 0 and self.frequencies is not None:
-                pos = event.position()
-                px = int(pos.x())
-                self._cursor_x = px
-                secs = self._px_to_time(px)
-                freq = self._pixel_to_freq(pos.y())
-                db = self._get_cursor_db(secs, freq)
-                self.cursor_info.emit(secs, freq, db, px)
-                self.update()
-            super().mouseMoveEvent(event)
+        # Track cursor position and emit coordinate info
+        if self.duration > 0 and self.frequencies is not None:
+            pos = event.position()
+            px = int(pos.x())
+            self._cursor_x = px
+            secs = self._px_to_time(px)
+            freq = self._pixel_to_freq(pos.y())
+            db = self._get_cursor_db(secs, freq)
+            self.cursor_info.emit(secs, freq, db, px)
+            self.update()
+        super().mouseMoveEvent(event)
 
     def leaveEvent(self, event) -> None:
         self._cursor_x = -1
         self.update()
         self.cursor_left.emit()
         super().leaveEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:
-        if getattr(self, '_dragging', False) and event.button() == Qt.MouseButton.LeftButton:
-            self._dragging = False
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-            if self.duration > 0:
-                secs = self._px_to_time(event.position().x())
-                self.seekRequested.emit(secs)  # single seek on release
-        else:
-            super().mouseReleaseEvent(event)
 
     # ── Zoom ───────────────────────────────────────────────────────
 

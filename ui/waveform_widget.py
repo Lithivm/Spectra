@@ -3,18 +3,16 @@
 import numpy as np
 
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtGui import QPainter, QColor, QBrush, QPolygonF, QFont, QPen
+from PyQt6.QtGui import QPainter, QColor, QBrush, QPolygonF, QFont
 from lang import t, on_lang_change
 from ui.styles import BORDER_MID
-from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
+from PyQt6.QtCore import Qt, QRectF, QPointF
 
 _ENVELOPE_SIZE = 4096
 
 
 class WaveformWidget(QWidget):
     """Shows the audio waveform in a smooth, visually pleasing style."""
-
-    seekRequested = pyqtSignal(float)  # seconds
 
     def __init__(self):
         super().__init__()
@@ -23,8 +21,6 @@ class WaveformWidget(QWidget):
         self.duration = 0.0
         self._envelope_cache: np.ndarray | None = None
         self._cached_polygon: QPolygonF | None = None
-        self.playhead_pos: float = -1.0       # seconds, -1 = hidden; owned by main_window
-        self._on_playhead_drag: callable | None = None
         on_lang_change(lambda _lang: self.update() if self.audio is None else None)
 
     def _build_envelope(self, channel_samples: np.ndarray) -> np.ndarray:
@@ -47,12 +43,6 @@ class WaveformWidget(QWidget):
 
         self.update()
 
-    def set_playhead(self, seconds: float) -> None:
-        """Set playhead position — called by main_window only."""
-        if seconds != self.playhead_pos:
-            self.playhead_pos = seconds
-            self.update()
-
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -65,8 +55,6 @@ class WaveformWidget(QWidget):
 
         self._draw_waveform(painter, rect)
         self._draw_axes(painter, rect)
-        if self.playhead_pos >= 0 and self.duration > 0:
-            self._draw_playhead(painter, rect)
         painter.end()
 
     def _draw_waveform(self, painter, rect):
@@ -110,51 +98,8 @@ class WaveformWidget(QWidget):
         cy = int(rect.height() // 2)
         painter.drawLine(0, cy, int(rect.width()), cy)
 
-    def _draw_playhead(self, painter, rect):
-        x = int(self.playhead_pos / self.duration * rect.width())
-        painter.setPen(QPen(QColor("#e8e6e2"), 1))
-        painter.drawLine(x, 0, x, int(rect.height()))
-
     def _draw_empty(self, painter, rect):
         painter.setPen(QColor(BORDER_MID))
         font = QFont("system-ui, sans-serif", 13)
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, t("波形图 — 打开音频文件查看", "Waveform — open an audio file to view"))
-
-    # ── Mouse drag ─────────────────────────────────────────────────
-
-    def mousePressEvent(self, event) -> None:
-        if (event.button() == Qt.MouseButton.LeftButton
-                and self.playhead_pos >= 0 and self.duration > 0):
-            px = int(self.playhead_pos / self.duration * self.width())
-            if abs(event.position().x() - px) <= 20:
-                self._dragging = True
-                self.setCursor(Qt.CursorShape.SizeHorCursor)
-                return
-        # Click anywhere on waveform seeks immediately
-        if event.button() == Qt.MouseButton.LeftButton and self.duration > 0:
-            secs = max(0, min(event.position().x() / self.width(), 1.0)) * self.duration
-            self.playhead_pos = secs
-            self.seekRequested.emit(secs)
-            self.update()
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event) -> None:
-        if getattr(self, '_dragging', False) and self.duration > 0:
-            secs = max(0, min(event.position().x() / self.width(), 1.0)) * self.duration
-            self.playhead_pos = secs
-            if self._on_playhead_drag is not None:
-                self._on_playhead_drag(secs)
-            self.update()
-        else:
-            super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:
-        if getattr(self, '_dragging', False) and event.button() == Qt.MouseButton.LeftButton:
-            self._dragging = False
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-            if self.duration > 0:
-                secs = max(0, min(event.position().x() / self.width(), 1.0)) * self.duration
-                self.seekRequested.emit(secs)
-        else:
-            super().mouseReleaseEvent(event)
