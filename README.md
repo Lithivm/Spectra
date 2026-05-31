@@ -13,8 +13,10 @@
 | English | 中文 |
 |---------|------|
 | **OpenGL Spectrogram** — fragment shader with real-time colormap switching (12 palettes) | **OpenGL 频谱图** — 片段着色器渲染，实时切换 12 种色板 |
-| **Audio Playback** — play/pause with synchronized playhead on waveform + spectrogram | **音频播放** — 播放/暂停，波形与频谱同步进度指示 |
-| **Draggable Playhead** — click or drag to seek, always visible at current position | **可拖拽进度线** — 点击或拖拽跳转，始终显示当前位置 |
+| **Audio Playback** — play/pause with progress slider, synchronized with waveform | **音频播放** — 播放/暂停，进度滑块与波形同步 |
+| **Progress Slider** — dedicated seek bar between spectrogram and X-axis | **播放进度条** — 声谱图与时间轴之间的独立滑块，拖拽定位 |
+| **Cursor Info** — hover shows time, frequency, and dB at cursor position | **光标信息** — 悬停实时显示当前时间、频率、dB 值 |
+| **Wheel Zoom** — scroll to zoom time axis, Shift+scroll for frequency axis, double-click reset | **滚轮缩放** — 滚轮缩放时间轴，Shift+滚轮缩放频率轴，双击重置 |
 | **Quality Analysis** — clipping detection, upsampling check, dynamic range (DR), LUFS (EBU R128), true peak, LRA | **质量分析** — 削波检测、升频检测、动态范围、响度 (LUFS)、真峰值 |
 | **Multi-resolution STFT** — standard, multi-band, and phase-reassigned (iZotope RX style) | **多分辨率 STFT** — 标准、多频段、相位重分配三种模式 |
 | **Flexible Y-axis** — linear, logarithmic, mel, and bark frequency scales | **灵活 Y 轴** — 线性、对数、mel、bark 四种频率刻度 |
@@ -23,6 +25,7 @@
 | **Bilingual UI** — Chinese / English one-click toggle | **双语界面** — 工具栏一键切换中文 / 英文 |
 | **Batch Analysis** — process folders, export to CSV | **批量分析** — 批量处理文件夹，导出 CSV |
 | **Screenshot Export** — save spectrogram view as PNG | **截图导出** — 保存当前频谱视图为 PNG |
+| **Fast Startup** — heavy libraries lazy-loaded in background thread | **快速启动** — 重量级库后台延迟加载，启动秒开 |
 
 ## Supported Formats · 支持格式
 
@@ -122,16 +125,16 @@ Spectra/
 │   ├── palette.py               # Colormap registry (zero-dependency)
 │   └── batch.py                 # CSV export for batch analysis
 ├── ui/
-│   ├── main_window.py           # Main window, toolbar, workers, safe_slot
-│   ├── spectrogram_widget.py    # QOpenGLWidget renderer + axis/colorbar
-│   ├── waveform_widget.py       # Waveform envelope + playhead
+│   ├── main_window.py           # Main window, toolbar, playback slider, workers
+│   ├── spectrogram_widget.py    # QOpenGLWidget renderer + axis/colorbar + cursor zoom
+│   ├── waveform_widget.py       # Waveform envelope
 │   ├── metadata_panel.py        # File info + quality analysis panel
 │   ├── playback_engine.py       # Audio playback via sounddevice
 │   ├── batch_dialog.py          # Batch progress dialog
 │   ├── styles.py                # Color tokens for dark theme
 │   └── shaders/
 │       ├── spectrogram.vert     # GLSL vertex shader
-│       └── spectrogram.frag     # GLSL fragment shader
+│       └── spectrogram.frag     # GLSL fragment shader (zoom uniforms)
 └── assets/
     ├── logo.png
     └── logo.ico

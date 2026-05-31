@@ -16,15 +16,19 @@
 │  │  ┌─────────────────────────────────────────────────────┐  │  │
 │  │  │  WaveformWidget (aligned with spectrogram)          │  │  │
 │  │  ├─────────────────────────────────────────────────────┤  │  │
-│  │  │  [YAxis] [SpectrogramGLWidget] [ColorBar] [XAxis]   │  │  │
-│  │  │          ↑ playhead overlay (shared with waveform)  │  │  │
+│  │  │  [YAxis] [SpectrogramGLWidget] [ColorBar]           │  │  │
+│  │  │          ↑ cursor overlay + wheel zoom              │  │  │
+│  │  ├─────────────────────────────────────────────────────┤  │  │
+│  │  │  PlaybackSlider (seek bar, aligned with spectrogram)│  │  │
+│  │  ├─────────────────────────────────────────────────────┤  │  │
+│  │  │  XAxis (time, round-minute labels)                  │  │  │
 │  │  ├─────────────────────────────────────────────────────┤  │  │
 │  │  │  MetadataPanel (right sidebar)                      │  │  │
 │  │  └─────────────────────────────────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────────────┘  │
 │                                                             │  │
 │  PlaybackEngine (sounddevice OutputStream)                     │  │
-│  — audio playback with playhead sync                           │  │
+│  — audio playback with slider sync                             │  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -98,11 +102,16 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
 - Shader 文件外置：`ui/shaders/spectrogram.vert` / `spectrogram.frag`
 - 流式加载：texture 初始化为 `-120.0` dB（噪声底），`GL_NEAREST` 过滤，软边界过渡
 - 3-tap 垂直 box filter 消除频率混叠
+- **视图状态**：`_view_t0/_view_t1`（时间窗口）、`_view_f0/_view_f1`（频率窗口），通过 shader uniform `u_t_start/u_t_end/u_fview_min/u_fview_max` 实现 GPU 端缩放
+- **光标信息**：`setMouseTracking(True)`，`mouseMoveEvent` 发射 `cursor_info(time, freq, dB, px)` 信号
+- **滚轮缩放**：`wheelEvent` 以光标位置为中心缩放时间轴，Shift+滚轮缩放频率轴，双击重置
+- **光标竖线**：hover 时绘制跟随鼠标的竖线，离开时清除
 
 #### 坐标轴组件
-- `_YAxisWidget` — 频率轴（左）
-- `_XAxisWidget` — 时间轴（下）
+- `_YAxisWidget` — 频率轴（左），支持 `view_f0/view_f1` 参数，过滤视窗外的刻度
+- `_XAxisWidget` — 时间轴（下），支持 `view_t0/view_t1` 参数，刻度只显示整分钟（短文件显示整秒）
 - `_ColorBarWidget` — dB 色条（右），渐变条宽度 7px
+- 三个组件 `pad_top=0, pad_bot=0`，与声谱图完全对齐
 
 ### 2.7 音频播放 — `ui/playback_engine.py`
 
@@ -111,13 +120,13 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
 - `_cb_frame` 读写加锁，跨线程安全
 - `pause()` 在 `_close_stream()`（可能触发 `_on_stream_finished` 覆盖计数器）之后恢复保存的位置
 
-### 2.8 Playhead 同步
+### 2.8 播放进度条 — `_PlaybackSlider`（`ui/main_window.py`）
 
-- playhead 位置由 `main_window` 单一管理
-- `WaveformWidget` 和 `SpectrogramGLWidget` 通过 `playhead_pos` 属性被动绘制
-- 拖拽时 `_on_playhead_drag` 回调直接写两个 widget 的 `playhead_pos` 并 repaint
-- 点击判定宽度 ±20px
-- 不播放时 playhead 始终显示在最左端
+- 自定义 QWidget，位于声谱图与 X 轴之间（grid row 2, col 1）
+- 轨道 + 进度填充 + 可拖拽圆形滑块
+- 拖拽时实时跳转播放位置（`sliderPressed`/`sliderReleased`/`valueChanged` 信号）
+- `resizeEvent` 中向左右各扩展 `_PAD=8px`，滑块在端点不裁切，轨道与声谱图等宽对齐
+- 播放时滑块自动跟随（`_on_playback_tick` 更新 value），停止时归零
 
 ---
 
@@ -141,14 +150,15 @@ MainWindow (QMainWindow)
 │   │   │   └── WaveformWidget
 │   │   └── spec_card
 │   │       └── QGridLayout
-│   │           ├── filename_widget (row 0)
+│   │           ├── filename_widget (row 0, col 0-2)
 │   │           ├── YAxisWidget (row 1, col 0, width=36)
 │   │           ├── SpectrogramGLWidget (row 1, col 1, stretch)
 │   │           ├── ColorBarWidget (row 1, col 2, width=36)
-│   │           └── XAxisWidget (row 2)
+│   │           ├── PlaybackSlider (row 2, col 1, height=20)
+│   │           └── XAxisWidget (row 3, col 0-2, height=36)
 │   └── right
 │       └── MetadataPanel (width=310)
-└── status_bar
+└── status_bar (zoom hint left-aligned)
 ```
 
 ### 关键 UI 设计模式
@@ -234,7 +244,27 @@ analyzer/core.py
 
 ---
 
-## 8. 扩展点
+## 8. 启动优化
+
+### 延迟加载策略
+
+重量级库（librosa、pyfftw、scipy、pyloudnorm）不在模块顶层导入，而是延迟到首次使用时加载：
+
+- `analyzer/_state.py`：`import pyfftw` 移入 `_ensure_wisdom()` / `_flush_wisdom()`
+- `analyzer/spectrum.py`：`import librosa` 移入各方法内部（stft、spectrogram_db 等 10 个方法）
+- `analyzer/quality.py`：`import librosa` 移入 `_measure_dynamic_range()`，`import pyloudnorm` 移入 `_measure_loudness()`
+- `analyzer/core.py`：`_ensure_librosa()` 在 `load()` 中调用，含 FutureWarning 抑制
+- `ui/main_window.py`：`AudioAnalyzer` 导入推迟到 `_LoadWorker.run()` / `_BatchWorker.run()`，`_PreloadWorker` 后台预热
+
+### i18n 系统
+
+- `lang.t("中文", "English")` 统一翻译入口
+- `on_lang_change(callback)` 注册回调，返回 `unsubscribe()` 函数防泄漏
+- `MetadataPanel._retranslate()` 使用 `set_texts()` 原地更新，避免 `deleteLater()` 导致的语言切换崩溃
+
+---
+
+## 9. 扩展点
 
 1. **新格式支持** — 扩展 `SUPPORTED_EXTENSIONS` + PyAV
 2. **新配色方案** — 在 `_PALETTE_STOPS` / `PALETTE` 加条目
@@ -243,5 +273,5 @@ analyzer/core.py
 
 ---
 
-> 最后更新: 2026-05-27
-> 基于文件: main.py, ui/main_window.py, analyzer/core.py, analyzer/_state.py, analyzer/spectrum.py, analyzer/quality.py, analyzer/load.py, analyzer/metadata.py, analyzer/batch.py, analyzer/palette.py, ui/spectrogram_widget.py, ui/metadata_panel.py, ui/waveform_widget.py, ui/playback_engine.py, ui/batch_dialog.py, ui/styles.py, ui/shaders/*.glsl, lang.py, spectra.spec
+> 最后更新: 2026-05-30
+> 基于文件: main.py, ui/main_window.py, analyzer/core.py, analyzer/_state.py, analyzer/spectrum.py, analyzer/quality.py, analyzer/load.py, analyzer/metadata.py, analyzer/batch.py, analyzer/palette.py, ui/spectrogram_widget.py, ui/metadata_panel.py, ui/waveform_widget.py, ui/playback_engine.py, ui/batch_dialog.py, ui/styles.py, ui/shaders/spectrogram.vert, ui/shaders/spectrogram.frag, lang.py, spectra.spec

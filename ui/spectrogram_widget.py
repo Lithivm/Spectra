@@ -8,6 +8,7 @@ Key features:
 - QImage-based blit rendering → single-pass, no per-pixel drawRect
 """
 
+import math
 import os
 import sys
 import numpy as np
@@ -211,7 +212,7 @@ class _YAxisWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        pad_top, pad_bot = 10, 10
+        pad_top, pad_bot = 0, 0
         h_eff = h - pad_top - pad_bot
 
         font = QFont("Segoe UI, sans-serif", 7)
@@ -283,8 +284,11 @@ class _YAxisWidget(QWidget):
             else:
                 label = f"{tick}"
             painter.setPen(QColor(170, 166, 161))
+            # Keep label within widget bounds at edges
+            label_h = 14
+            ly = max(0, min(y - label_h // 2, h - label_h))
             painter.drawText(
-                QRectF(1, y - 9, w - 7, 18),
+                QRectF(1, ly, w - 7, label_h),
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                 label,
             )
@@ -325,30 +329,66 @@ class _XAxisWidget(QWidget):
 
         t_start = self._view_t0 * self._duration
         t_end = self._view_t1 * self._duration
+        span = t_end - t_start
 
-        num_ticks = min(8, max(4, rw // 80))
-        for i in range(num_ticks):
-            frac = i / (num_ticks - 1) if num_ticks > 1 else 0
-            t = t_start + frac * (t_end - t_start)
-            x = left + int(frac * rw) if num_ticks > 1 else left
+        # Generate round-minute (or round-second for short audio) ticks
+        MIN_GAP = 65  # minimum pixel gap between ticks
+        max_ticks = max(2, rw // MIN_GAP)
+
+        ticks: list[float] = []
+        if span <= 0:
+            pass
+        elif span <= 10:
+            # Short audio: round-second ticks
+            step = max(1, int(span / max_ticks))
+            for s_sec in [1, 2, 5, 10, 15, 30]:
+                if span / s_sec <= max_ticks:
+                    step = s_sec
+                    break
+            t = math.ceil(t_start / step) * step
+            while t < t_end - 0.01:
+                ticks.append(t)
+                t += step
+        else:
+            # Longer audio: round-minute ticks only
+            step = max(1, int(span / 60 / max_ticks))
+            for s_min in [1, 2, 5, 10, 15, 30, 60]:
+                if span / 60 / s_min <= max_ticks:
+                    step = s_min
+                    break
+            t = math.ceil(t_start / (step * 60)) * (step * 60)
+            while t < t_end - 0.5:
+                ticks.append(t)
+                t += step * 60
+
+        # Always include start and end
+        all_ticks = [t_start] + ticks + [t_end]
+
+        def _fmt_time(seconds: float) -> str:
+            """Format time as M:SS or H:MM:SS."""
+            if seconds < 0:
+                seconds = 0.0
+            total = int(round(seconds))
+            h_part = total // 3600
+            m_part = (total % 3600) // 60
+            s_part = total % 60
+            if h_part > 0:
+                return f"{h_part}:{m_part:02d}:{s_part:02d}"
+            return f"{m_part}:{s_part:02d}"
+
+        for t in all_ticks:
+            frac = (t - t_start) / span if span > 0 else 0
+            x = left + int(frac * rw)
 
             # Tick mark (top edge)
             painter.setPen(QColor(150, 145, 140))
             painter.drawLine(QPointF(x, 0), QPointF(x, 5))
 
             # Label
-            if t < 1:
-                label = f"{t * 1000:.0f}ms"
-            elif t < 60:
-                label = f"{t:.1f}s"
-            else:
-                m = int(t // 60)
-                s = t % 60
-                label = f"{m}m{s:05.2f}s"
             painter.setPen(QColor(170, 166, 161))
             painter.drawText(
                 QRectF(x - 35, 5, 70, h - 5),
-                Qt.AlignmentFlag.AlignCenter, label,
+                Qt.AlignmentFlag.AlignCenter, _fmt_time(t),
             )
 
         painter.end()
@@ -383,10 +423,8 @@ class _ColorBarWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        SIDE = 36
-        PROTRUDE = 5
-        pad_top = SIDE - PROTRUDE
-        pad_bot = SIDE - PROTRUDE
+        pad_top = 0
+        pad_bot = 0
         h_eff = h - pad_top - pad_bot
         if h_eff <= 0:
             painter.end()
@@ -420,8 +458,11 @@ class _ColorBarWidget(QWidget):
             painter.setPen(QColor(150, 145, 140))
             painter.drawLine(QPointF(bar_x + bar_w, y), QPointF(bar_x + bar_w + 3, y))
             painter.setPen(QColor(170, 166, 161))
+            # Keep label within widget bounds at edges
+            label_h = 14
+            ly = max(0, min(y - label_h // 2, h - label_h))
             painter.drawText(
-                QRectF(bar_x + bar_w + 4, y - 7, w - bar_x - bar_w - 4, 14),
+                QRectF(bar_x + bar_w + 4, ly, w - bar_x - bar_w - 4, label_h),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                 f"{db_val}",
             )
@@ -473,8 +514,8 @@ class SpectrogramGLWidget(QOpenGLWidget):
             "QLabel {"
             "  background: rgba(0, 0, 0, 180);"
             "  border-radius: 8px;"
-            "  color: #F0EDE8;"
-            "  font-size: 18px;"
+            "  color: #A09D96;"
+            "  font-size: 13px;"
             "  font-weight: 600;"
             "}"
         )

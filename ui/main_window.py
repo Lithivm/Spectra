@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 from typing import Any
 
-from PyQt6.QtCore import QThread, Qt, pyqtSignal, QTimer, QRectF, QPointF
+from PyQt6.QtCore import QThread, Qt, pyqtSignal, QTimer, QRectF, QPointF, QSize
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor, QPainter, QBrush
 from PyQt6.QtWidgets import (
     QFileDialog, QHBoxLayout, QVBoxLayout,
@@ -161,10 +161,16 @@ def _card(radius: int = 12) -> QWidget:
 
 
 class _PlaybackSlider(QWidget):
-    """Custom playback progress bar with a draggable handle."""
+    """Custom playback progress bar with a draggable handle.
+
+    The widget extends _PAD pixels beyond each side so the handle is never
+    clipped while the track itself aligns exactly with the spectrogram.
+    """
     sliderPressed = pyqtSignal()
     sliderReleased = pyqtSignal()
     valueChanged = pyqtSignal(int)
+
+    _PAD = 8  # extra pixels on each side for handle overflow
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -173,6 +179,7 @@ class _PlaybackSlider(QWidget):
         self._dragging = False
         self.setMouseTracking(True)
         self._hover = False
+        self._resizing = False  # guard against recursive resizeEvent
 
     def setRange(self, minimum: int, maximum: int) -> None:
         self._maximum = maximum
@@ -184,6 +191,18 @@ class _PlaybackSlider(QWidget):
 
     def value(self) -> int:
         return self._value
+
+    def sizeHint(self):
+        return QSize(100, 20)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if not self._resizing:
+            self._resizing = True
+            geo = self.geometry()
+            pad = self._PAD
+            self.setGeometry(geo.x() - pad, geo.y(), geo.width() + 2 * pad, geo.height())
+            self._resizing = False
 
     def enterEvent(self, event) -> None:
         self._hover = True
@@ -210,10 +229,11 @@ class _PlaybackSlider(QWidget):
             self.sliderReleased.emit()
 
     def _update_from_mouse(self, x: float) -> None:
-        w = self.width()
+        pad = self._PAD
+        w = self.width() - 2 * pad  # track width
         if w <= 0:
             return
-        ratio = max(0.0, min(1.0, x / w))
+        ratio = max(0.0, min(1.0, (x - pad) / w))
         new_val = int(ratio * self._maximum)
         if new_val != self._value:
             self._value = new_val
@@ -223,12 +243,14 @@ class _PlaybackSlider(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
+        pad = self._PAD
+        w = self.width() - 2 * pad  # track width = spectrogram width
+        h = self.height()
         cy = h // 2
 
         # Track
         track_h = 4
-        track_rect = QRectF(0, cy - track_h // 2, w, track_h)
+        track_rect = QRectF(pad, cy - track_h // 2, w, track_h)
         painter.setBrush(QColor(BORDER_MID))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(track_rect, 2, 2)
@@ -236,13 +258,13 @@ class _PlaybackSlider(QWidget):
         # Progress fill
         if self._maximum > 0:
             fill_w = int(w * self._value / self._maximum)
-            fill_rect = QRectF(0, cy - track_h // 2, fill_w, track_h)
+            fill_rect = QRectF(pad, cy - track_h // 2, fill_w, track_h)
             painter.setBrush(QColor(ACCENT))
             painter.drawRoundedRect(fill_rect, 2, 2)
 
         # Handle
         if self._maximum > 0:
-            handle_x = int(w * self._value / self._maximum)
+            handle_x = pad + int(w * self._value / self._maximum)
             handle_r = 6 if self._hover or self._dragging else 4
             painter.setBrush(QColor("#F0EDE8"))
             painter.drawEllipse(QPointF(handle_x, cy), handle_r, handle_r)
@@ -529,7 +551,7 @@ class MainWindow(QMainWindow):
         self._colorbar = _ColorBarWidget()
         self._colorbar.setFixedWidth(36)
         self._colorbar.set_data(self._spec._lut_np)
-        _grid.addWidget(self._colorbar, 0, 2, 3, 1)
+        _grid.addWidget(self._colorbar, 1, 2)
 
         # Row 2: X-axis spans all 3 columns, data offset-aligned to spectrogram
         self._x_axis = _XAxisWidget()
@@ -565,7 +587,7 @@ class MainWindow(QMainWindow):
         self._progress_slider.sliderPressed.connect(self._on_slider_pressed)
         self._progress_slider.sliderReleased.connect(self._on_slider_released)
         self._progress_slider.valueChanged.connect(self._on_slider_changed)
-        _grid.addWidget(self._progress_slider, 2, 0, 1, 3)  # row 2, span all columns
+        _grid.addWidget(self._progress_slider, 2, 1)  # row 2, col 1 — aligned with spectrogram
 
         self._playback.state_changed.connect(self._on_playback_state)
         self._slider_dragging = False
