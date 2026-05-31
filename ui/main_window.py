@@ -6,12 +6,13 @@ import itertools
 import logging
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from typing import Any
 
 from PyQt6.QtCore import QThread, Qt, pyqtSignal, QTimer, QRectF, QPointF, QSize
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor, QPainter, QBrush
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor, QPainter
 from PyQt6.QtWidgets import (
     QFileDialog, QHBoxLayout, QVBoxLayout,
     QLabel, QMainWindow, QMessageBox, QStatusBar, QWidget,
@@ -36,6 +37,9 @@ from ui.styles import (
     TEXT_PRI, TEXT_SEC, TEXT_DIM,
 )
 from lang import t, toggle_lang, on_lang_change
+
+if TYPE_CHECKING:
+    from analyzer.core import AudioAnalyzer
 
 APP_STYLESHEET = f"""
 * {{
