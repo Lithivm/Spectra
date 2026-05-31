@@ -5,8 +5,6 @@ from __future__ import annotations
 import math
 
 import numpy as np
-import librosa
-import pyloudnorm as pyln
 
 
 class _QualityMixin:
@@ -166,6 +164,7 @@ class _QualityMixin:
     # Dynamic range
     # ------------------------------------------------------------------
     def _measure_dynamic_range(self, audio: np.ndarray) -> dict:
+        import librosa
         rms = librosa.feature.rms(y=audio, frame_length=2048, hop_length=512, center=False)[0]
         frames_db = 20 * np.log10(rms[rms > 0])
         if len(frames_db) == 0:
@@ -192,6 +191,7 @@ class _QualityMixin:
     # ------------------------------------------------------------------
     def _measure_loudness(self, audio: np.ndarray, sr: int, cancel_check=None) -> dict:
         """EBU R128 integrated loudness, short-term, LRA, true-peak (BS.1770-4)."""
+        import pyloudnorm as pyln
         if audio.ndim == 1:
             audio_st = np.column_stack([audio, audio])
         else:

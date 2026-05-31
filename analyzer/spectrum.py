@@ -5,7 +5,6 @@ from __future__ import annotations
 import warnings
 
 import numpy as np
-import librosa
 
 from ._state import (
     _stft_cache,
@@ -31,6 +30,7 @@ class _SpectrumMixin:
         win_length: int | None = None,
         window: str = "hann",
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        import librosa
         if self.data is None:
             raise RuntimeError("未加载音频")
         hop = hop_length or (n_fft // 4)
@@ -64,6 +64,7 @@ class _SpectrumMixin:
             "multi"    — multi-resolution: large FFT at lows, small at highs.
             "reassign" — phase-reassigned spectrogram for sharper harmonics.
         """
+        import librosa
         _ensure_wisdom()
         if self.filepath and self.filepath.exists():
             cache_key = (str(self.filepath), mode, n_fft)
@@ -135,6 +136,7 @@ class _SpectrumMixin:
         normalisation, because the global maximum is not known ahead of time.
         The shader's vmin/vmax range (-120..0 dB) absorbs the offset.
         """
+        import librosa
         _ensure_wisdom()
         from scipy.signal import get_window
 
@@ -256,6 +258,7 @@ class _SpectrumMixin:
         Mid  (300–3k Hz)  : n_fft=2048 — balanced.
         High (3k–Nyquist) : n_fft=512  — sharp transients.
         """
+        import librosa
         audio = self._mono
         sr = self.sample_rate
         nyq = sr / 2.0
@@ -319,6 +322,7 @@ class _SpectrumMixin:
         group-delay coordinates using first-order phase derivatives (Auger-Flandrin
         method, IEEE TASSP 1995).
         """
+        import librosa
         audio = self._mono
         sr = self.sample_rate
         hop = hop_length or (n_fft // 4)
@@ -395,6 +399,7 @@ class _SpectrumMixin:
         window: str = "hann",
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute mel-scale spectrogram → dB.  Returns (mel_freqs, times, db)."""
+        import librosa
         if self.data is None:
             raise RuntimeError("未加载音频")
         hop = hop_length or (n_fft // 8)
@@ -416,6 +421,7 @@ class _SpectrumMixin:
     # MFCC
     # ------------------------------------------------------------------
     def mfcc(self, n_mfcc: int = 13) -> np.ndarray:
+        import librosa
         if self.data is None:
             raise RuntimeError("未加载音频")
         audio = self._mono
@@ -425,6 +431,7 @@ class _SpectrumMixin:
     # RMS
     # ------------------------------------------------------------------
     def rms(self, frame_length: int = 2048, hop_length: int | None = None) -> np.ndarray:
+        import librosa
         hop = hop_length or (frame_length // 4)
         audio = self._mono
         return librosa.feature.rms(y=audio, frame_length=frame_length, hop_length=hop)[0]
@@ -433,6 +440,7 @@ class _SpectrumMixin:
     # Spectral Centroid
     # ------------------------------------------------------------------
     def spectral_centroid(self) -> tuple[np.ndarray, np.ndarray]:
+        import librosa
         if self.data is None:
             raise RuntimeError("未加载音频")
         audio = self._mono
@@ -444,6 +452,7 @@ class _SpectrumMixin:
     # Zero Crossing Rate
     # ------------------------------------------------------------------
     def zcr(self) -> tuple[np.ndarray, np.ndarray]:
+        import librosa
         zcr = librosa.feature.zero_crossing_rate(self.waveform)[0]
         t = np.linspace(0, self.duration, len(zcr))
         return t, zcr

@@ -9,18 +9,35 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import librosa
 import numpy as np
-import pyfftw.interfaces.scipy_fft as fftw_scipy
-
-librosa.set_fftlib(fftw_scipy)
 
 from lang import t
 
 from .load import load_audio
 from .metadata import get_metadata
-from .spectrum import _SpectrumMixin
-from .quality import _QualityMixin
+
+_librosa_ready = False
+
+
+def _ensure_librosa() -> None:
+    """One-time lazy setup: import librosa + pyfftw and wire them together."""
+    global _librosa_ready
+    if _librosa_ready:
+        return
+    import warnings
+    import librosa
+    import pyfftw.interfaces.scipy_fft as fftw_scipy
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning)
+        librosa.set_fftlib(fftw_scipy)
+    _librosa_ready = True
+
+
+# Mixin imports are safe at module level — with their librosa/pyloudnorm
+# imports moved to function-level, importing the modules is now lightweight.
+from .spectrum import _SpectrumMixin  # noqa: E402
+from .quality import _QualityMixin    # noqa: E402
+
 
 _TAG_TR = {
     "标题": ("标题", "Title"),
@@ -54,6 +71,7 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
     # Load
     # ------------------------------------------------------------------
     def load(self, filepath: str | Path) -> None:
+        _ensure_librosa()
         filepath = Path(filepath)
         self.data, self.sample_rate = load_audio(filepath)
         self.channels = self.data.shape[0] if self.data.ndim > 1 else 1

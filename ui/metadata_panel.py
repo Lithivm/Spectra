@@ -62,8 +62,8 @@ class _Row(QWidget):
         layout.setContentsMargins(16, 5, 16, 5)
         layout.setSpacing(8)
 
-        k = QLabel(key)
-        k.setStyleSheet(f"""
+        self._key_label = QLabel(key)
+        self._key_label.setStyleSheet(f"""
             color: {TEXT_SEC};
             font-size: 11px;
             min-width: 75px;
@@ -71,29 +71,36 @@ class _Row(QWidget):
             background: transparent;
             border: none;
         """)
-        k.setWordWrap(False)
+        self._key_label.setWordWrap(False)
 
-        v = QLabel(value)
-        v.setStyleSheet(f"""
+        self._value_label = QLabel(value)
+        self._value_label.setStyleSheet(f"""
             color: {value_color};
             font-size: 11px;
             font-family: 'Consolas', monospace;
             background: transparent;
             border: none;
         """)
-        v.setWordWrap(True)
-        v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._value_label.setWordWrap(True)
+        self._value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-        layout.addWidget(k)
-        layout.addWidget(v, stretch=1)
+        layout.addWidget(self._key_label)
+        layout.addWidget(self._value_label, stretch=1)
         # 占位 — 与 _AnalysisRow 的指示点对齐
         layout.addSpacing(20)
+
+    def set_texts(self, key: str, value: str) -> None:
+        """Update labels in-place (for language switch)."""
+        self._key_label.setText(key)
+        self._value_label.setText(value)
 
 
 class _AnalysisRow(QWidget):
     """质量分析行，带颜色指示点。"""
     def __init__(self, ok: bool, key: str, value: str, warn: bool = False) -> None:
         super().__init__()
+        self._ok = ok
+        self._warn = warn
         self.setStyleSheet(f"""
             QWidget {{
                 background: transparent;
@@ -107,8 +114,8 @@ class _AnalysisRow(QWidget):
         layout.setContentsMargins(16, 6, 16, 6)
         layout.setSpacing(8)
 
-        k = QLabel(key)
-        k.setStyleSheet(f"""
+        self._key_label = QLabel(key)
+        self._key_label.setStyleSheet(f"""
             color: {TEXT_SEC};
             font-size: 11px;
             min-width: 75px;
@@ -116,18 +123,18 @@ class _AnalysisRow(QWidget):
             background: transparent;
             border: none;
         """)
-        layout.addWidget(k)
+        layout.addWidget(self._key_label)
 
-        v = QLabel(value)
-        v.setStyleSheet(f"""
+        self._value_label = QLabel(value)
+        self._value_label.setStyleSheet(f"""
             color: {TEXT_PRI if ok else (ACCENT_AMB if warn else ACCENT_RED)};
             font-size: 11px;
             font-family: 'Consolas', monospace;
             background: transparent;
             border: none;
         """)
-        v.setWordWrap(True)
-        layout.addWidget(v, stretch=1)
+        self._value_label.setWordWrap(True)
+        layout.addWidget(self._value_label, stretch=1)
 
         # 状态点 — 靠右垂直居中对齐
         dot = QLabel("●")
@@ -141,6 +148,11 @@ class _AnalysisRow(QWidget):
         dot.setFixedWidth(20)
         dot.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(dot)
+
+    def set_texts(self, key: str, value: str) -> None:
+        """Update labels in-place (for language switch)."""
+        self._key_label.setText(key)
+        self._value_label.setText(value)
 
 
 class MetadataPanel(QWidget):
@@ -379,10 +391,93 @@ class MetadataPanel(QWidget):
     def _retranslate(self, _lang: str | None = None) -> None:
         self._header_title.setText(t("文件信息", "File Info"))
         if self._stored_analyzer:
-            saved_qa = self._stored_qa
-            self.load_metadata(self._stored_analyzer)
-            self._stored_qa = saved_qa
-            if saved_qa is not None:
-                self.load_analysis(saved_qa)
+            self._retranslate_with_data()
         elif hasattr(self, '_empty_label') and self._empty_label:
             self._empty_label.setText(t("拖入文件\n进行分析", "Drop a file\nto analyze"))
+
+    def _retranslate_with_data(self) -> None:
+        """Update all row texts in-place — no widget destruction."""
+        analyzer = self._stored_analyzer
+        if analyzer is None:
+            return
+        qa = self._stored_qa
+
+        info = analyzer.info()
+        info_items = list(info.items())
+
+        _GENERIC = {"format": ("格式", "Format")}
+        skip = {"filename", "filepath", "sample_rate", "bitrate", "channels", "mime_type", "duration"}
+        tag_items = []
+        if analyzer.metadata:
+            for k, v in analyzer.metadata.items():
+                if k in skip:
+                    continue
+                zh, en = _GENERIC.get(k) or _TAG_TR.get(k, (k, k))
+                tag_items.append((t(zh, en), str(v)))
+
+        # Walk layout children and update in-place
+        _SECTIONS = {"技术信息", "TECHNICAL", "标签", "TAGS", "分析", "ANALYSIS"}
+        row_idx = 0
+        analysis_idx = 0
+        for i in range(self._content_layout.count()):
+            w = self._content_layout.itemAt(i).widget()
+            if w is None:
+                continue
+            if isinstance(w, QLabel) and w.text() in _SECTIONS:
+                txt = w.text()
+                if txt in ("技术信息", "TECHNICAL"):
+                    w.setText(t("技术信息", "TECHNICAL"))
+                elif txt in ("标签", "TAGS"):
+                    w.setText(t("标签", "TAGS"))
+                elif txt in ("分析", "ANALYSIS"):
+                    w.setText(t("分析", "ANALYSIS"))
+            elif isinstance(w, _Row):
+                if row_idx < len(info_items):
+                    k, v = info_items[row_idx]
+                    w.set_texts(k, str(v))
+                elif row_idx < len(info_items) + len(tag_items):
+                    ti = row_idx - len(info_items)
+                    w.set_texts(*tag_items[ti])
+                # else: analysis metric rows (LUFS, Peak, RMS) — keys are not translated
+                row_idx += 1
+            elif isinstance(w, _AnalysisRow):
+                if qa:
+                    self._update_analysis_row(w, analysis_idx, qa)
+                analysis_idx += 1
+
+    @staticmethod
+    def _update_analysis_row(row: _AnalysisRow, idx: int, qa: dict) -> None:
+        """Update a single _AnalysisRow with current language texts."""
+        clip = qa.get("clipping", {})
+        ups = qa.get("upsampling", {})
+        dr = qa.get("dynamic_range", {})
+
+        if idx == 0:
+            if clip.get("ok"):
+                row.set_texts(t("削波", "Clipping"), t("未检测到削波", "No clipping detected"))
+            else:
+                n = clip.get("count", 0)
+                ms = clip.get("longest_ms", 0)
+                hard = clip.get("hard_clips", 0)
+                soft = clip.get("soft_clips", 0)
+                detail = f"{n} events, max {ms}ms"
+                if hard > 0 or soft > 0:
+                    detail += f"  ({hard} hard / {soft} soft)"
+                row.set_texts(t("削波", "Clipping"), detail)
+        elif idx == 1:
+            chz = ups.get("cutoff_hz", 0)
+            nyq_hz = ups.get("nyq_hz", 0)
+            if ups.get("ok"):
+                row.set_texts(t("高频", "Hi-freq"), t("正常", "Normal"))
+            else:
+                pct = f" ({chz / nyq_hz:.0%} Nyq)" if nyq_hz > 0 else ""
+                row.set_texts(t("高频", "Hi-freq"), f"{chz/1000:.1f} kHz{pct}")
+        elif idx == 2:
+            dr_val = dr.get("dr", 0)
+            if dr_val > 14:
+                label = t("优秀", "Excellent")
+            elif dr_val >= 8:
+                label = t("正常", "Normal")
+            else:
+                label = t("压缩", "Compressed")
+            row.set_texts(t("动态范围", "Dynamics"), f"DR {dr_val:.1f} — {label}")

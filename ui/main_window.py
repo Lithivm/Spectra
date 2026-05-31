@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 
 
 from ui.playback_engine import PlaybackEngine
-from analyzer.core import AudioAnalyzer, _stft_cache, _stft_lock
+from analyzer._state import _stft_cache, _stft_lock
 from analyzer.palette import PALETTE
 from analyzer import is_audio_file, SUPPORTED_EXTENSIONS
 
@@ -251,10 +251,28 @@ class _LoadWorker(QThread):
 
     def run(self) -> None:
         try:
+            from analyzer.core import AudioAnalyzer
             self.analyzer = AudioAnalyzer(self._path)
             self.loaded.emit()
         except Exception as e:
             self.error.emit(str(e))
+
+
+class _PreloadWorker(QThread):
+    """Background thread to warm up heavy libraries (librosa, pyfftw, scipy).
+    Runs once at startup so the first file-open is instant."""
+    finished = pyqtSignal()
+
+    def run(self) -> None:
+        try:
+            from analyzer.core import _ensure_librosa
+            _ensure_librosa()
+            # Also warm up scipy (used by quality analysis)
+            import scipy.signal  # noqa: F401
+            import scipy.ndimage  # noqa: F401
+        except Exception:
+            pass
+        self.finished.emit()
 
 
 class _QualityWorker(QThread):
@@ -339,6 +357,12 @@ class MainWindow(QMainWindow):
 
         self.setStyleSheet(APP_STYLESHEET)
         self._setup_ui()
+
+        # Background preload: warm up heavy libraries while user sees the window
+        self._preload_worker = _PreloadWorker()
+        self._preload_worker.finished.connect(
+            lambda: logger.debug("Preload complete"))
+        self._preload_worker.start()
 
     def _setup_ui(self) -> None:
         self.setWindowTitle(self._title)

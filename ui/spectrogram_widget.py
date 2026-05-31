@@ -446,14 +446,14 @@ class SpectrogramGLWidget(QOpenGLWidget):
         # ── Loading overlay — QLabel avoids QPainter text on FBO ───
         self._progress_label = QLabel(self)
         self._progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._progress_label.setFixedSize(130, 34)
+        self._progress_label.setFixedSize(200, 50)
         self._progress_label.setStyleSheet(
             "QLabel {"
             "  background: rgba(0, 0, 0, 180);"
             "  border-radius: 8px;"
-            "  color: #d2cfca;"
-            "  font-size: 13px;"
-            "  font-weight: 500;"
+            "  color: #F0EDE8;"
+            "  font-size: 18px;"
+            "  font-weight: 600;"
             "}"
         )
         self._progress_label.setVisible(False)
@@ -572,7 +572,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
     def _reposition_progress_label(self) -> None:
         w, h = self.width(), self.height()
-        lw, lh = 130, 34
+        lw, lh = 200, 50
         self._progress_label.move((w - lw) // 2, (h - lh) // 2)
 
     def _paint_cutoff_overlay(self, painter: QPainter) -> None:

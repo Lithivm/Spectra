@@ -13,11 +13,7 @@ import sys
 import threading
 from collections import OrderedDict
 
-# pyfftw imported at module level (lightweight), but configuration and
-# wisdom loading are deferred to _ensure_wisdom() to avoid file I/O at
-# import time.
 import numpy as np
-import pyfftw
 
 # ---------------------------------------------------------------------------
 # FFTW wisdom persistence (lazy — loaded on first STFT call)
@@ -37,6 +33,7 @@ def _ensure_wisdom() -> None:
         if _wisdom_loaded:
             return
 
+        import pyfftw
         pyfftw.interfaces.cache.enable()
         pyfftw.config.NUM_THREADS = os.cpu_count() or 4
 
@@ -71,6 +68,7 @@ def _flush_wisdom() -> None:
         return
     try:
         import pickle
+        import pyfftw
         with open(_wisdom_path, "wb") as f:
             pickle.dump(pyfftw.export_wisdom(), f)
     except Exception:
