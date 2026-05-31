@@ -619,6 +619,12 @@ class MainWindow(QMainWindow):
     def _create_statusbar(self) -> None:
         sb = QStatusBar()
         sb.setFixedHeight(24)
+        self._zoom_hint = QLabel(
+            t("滚轮: 缩放时间  Shift+滚轮: 缩放频率  双击: 重置",
+              "Wheel: zoom time  Shift+Wheel: zoom freq  Dbl-click: reset"))
+        self._zoom_hint.setStyleSheet(
+            f"color: {TEXT_DIM}; font-size: 10px; font-family: 'Consolas'; background: transparent;")
+        sb.addWidget(self._zoom_hint)
         self._status_label = QLabel(t("就绪", "Ready"))
         self._status_label.setStyleSheet(
             f"color: {TEXT_DIM}; font-size: 10px; font-family: 'Consolas'; background: transparent;")
@@ -1024,6 +1030,9 @@ class MainWindow(QMainWindow):
         self._mode_label.setText(t("模式", "Mode"))
         self._yscale_label.setText(t("刻度", "Scale"))
         self._play_label.setText(t("播放", "Play"))
+        self._zoom_hint.setText(
+            t("滚轮: 缩放时间  Shift+滚轮: 缩放频率  双击: 重置",
+              "Wheel: zoom time  Shift+Wheel: zoom freq  Dbl-click: reset"))
         if not self._current_path:
             self._status_label.setText(t("就绪", "Ready"))
         self.setWindowTitle("Spectra")
