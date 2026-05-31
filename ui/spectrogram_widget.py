@@ -197,9 +197,12 @@ class _YAxisWidget(QWidget):
         self._yscale_mode = "linear"
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
-    def set_data(self, freqs, yscale_mode: str = "linear") -> None:
+    def set_data(self, freqs, yscale_mode: str = "linear",
+                 view_f0: float = 0.0, view_f1: float = 1.0) -> None:
         self._freqs = np.asarray(freqs) if freqs is not None else None
         self._yscale_mode = yscale_mode
+        self._view_f0 = view_f0
+        self._view_f1 = view_f1
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -233,6 +236,7 @@ class _YAxisWidget(QWidget):
 
         f_min = max(float(self._freqs[0]), 1.0)
         f_max = float(self._freqs[-1])
+        view_range = self._view_f1 - self._view_f0
 
         last_y = None
         for tick in visible_ticks:
@@ -252,6 +256,13 @@ class _YAxisWidget(QWidget):
                 frac = 0.0 if tick == 0 else (m_tick - m_min) / (m_max - m_min)
             else:
                 frac = (tick - f_min) / (f_max - f_min) if f_max > f_min else 0.5
+
+            # Map through view window: skip ticks outside visible range
+            if view_range < 1.0:
+                view_frac = (frac - self._view_f0) / view_range
+                if view_frac < -0.01 or view_frac > 1.01:
+                    continue
+                frac = view_frac
 
             frac = max(0.0, min(1.0, frac))
             y = int(pad_top + h_eff - frac * h_eff)
@@ -287,10 +298,14 @@ class _XAxisWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._duration = 0.0
+        self._view_t0 = 0.0
+        self._view_t1 = 1.0
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
-    def set_data(self, duration: float) -> None:
+    def set_data(self, duration: float, view_t0: float = 0.0, view_t1: float = 1.0) -> None:
         self._duration = duration
+        self._view_t0 = view_t0
+        self._view_t1 = view_t1
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -308,10 +323,14 @@ class _XAxisWidget(QWidget):
         font = QFont("Segoe UI, sans-serif", 8)
         painter.setFont(font)
 
+        t_start = self._view_t0 * self._duration
+        t_end = self._view_t1 * self._duration
+
         num_ticks = min(8, max(4, rw // 80))
         for i in range(num_ticks):
-            t = (i / (num_ticks - 1)) * self._duration if num_ticks > 1 else 0
-            x = left + int((i / (num_ticks - 1)) * rw) if num_ticks > 1 else left
+            frac = i / (num_ticks - 1) if num_ticks > 1 else 0
+            t = t_start + frac * (t_end - t_start)
+            x = left + int(frac * rw) if num_ticks > 1 else left
 
             # Tick mark (top edge)
             painter.setPen(QColor(150, 145, 140))
@@ -321,11 +340,11 @@ class _XAxisWidget(QWidget):
             if t < 1:
                 label = f"{t * 1000:.0f}ms"
             elif t < 60:
-                label = f"{int(t)}s"
+                label = f"{t:.1f}s"
             else:
                 m = int(t // 60)
-                s = int(t % 60)
-                label = f"{m}m{s:02d}s"
+                s = t % 60
+                label = f"{m}m{s:05.2f}s"
             painter.setPen(QColor(170, 166, 161))
             painter.drawText(
                 QRectF(x - 35, 5, 70, h - 5),
@@ -426,6 +445,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
     seekRequested = pyqtSignal(float)  # seconds
     cursor_info = pyqtSignal(float, float, float, int)  # time, freq, db, pixel_x
     cursor_left = pyqtSignal()
+    view_changed = pyqtSignal()  # zoom changed, axes need update
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -471,6 +491,12 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
         # ── Cursor hover ──────────────────────────────────────────
         self._cursor_x: int = -1  # pixel x, -1 = hidden
+
+        # ── View window (zoom) ────────────────────────────────────
+        self._view_t0 = 0.0   # fraction of duration
+        self._view_t1 = 1.0
+        self._view_f0 = 0.0   # fraction of freq range
+        self._view_f1 = 1.0
 
         # ── Streaming state ────────────────────────────────────────
         self._is_streaming = False
@@ -671,6 +697,10 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._u_filled_cols  = glGetUniformLocation(self._gl_program, "u_filled_cols")
         self._u_total_cols   = glGetUniformLocation(self._gl_program, "u_total_cols")
         self._u_n_freqs      = glGetUniformLocation(self._gl_program, "u_n_freqs")
+        self._u_t_start      = glGetUniformLocation(self._gl_program, "u_t_start")
+        self._u_t_end        = glGetUniformLocation(self._gl_program, "u_t_end")
+        self._u_fview_min    = glGetUniformLocation(self._gl_program, "u_fview_min")
+        self._u_fview_max    = glGetUniformLocation(self._gl_program, "u_fview_max")
 
         self._vao = glGenVertexArrays(1)
 
@@ -701,9 +731,10 @@ class SpectrogramGLWidget(QOpenGLWidget):
         painter.end()
 
     def _paint_playhead(self, painter: QPainter) -> None:
-        x = int(self.playhead_pos / self.duration * self.width()) if self.duration > 0 else 0
-        painter.setPen(QPen(QColor("#e8e6e2"), 1))
-        painter.drawLine(x, 0, x, self.height())
+        x = self._time_to_px(self.playhead_pos)
+        if 0 <= x <= self.width():
+            painter.setPen(QPen(QColor("#e8e6e2"), 1))
+            painter.drawLine(x, 0, x, self.height())
 
     def _paint_cursor(self, painter: QPainter) -> None:
         if self._cursor_x < 0:
@@ -715,12 +746,14 @@ class SpectrogramGLWidget(QOpenGLWidget):
     # ── Cursor info mapping ────────────────────────────────────────
 
     def _pixel_to_freq(self, pixel_y: float) -> float:
-        """Map a pixel y-coordinate to frequency (Hz) using current y-scale."""
+        """Map a pixel y-coordinate to frequency (Hz) using current y-scale and view window."""
         h = self.height()
         if h <= 0 or self.frequencies is None or len(self.frequencies) < 2:
             return 0.0
         # GL UV y: top=1, bottom=0
-        y_ratio = max(0.0, min(1.0, 1.0 - pixel_y / h))
+        view_ratio = max(0.0, min(1.0, 1.0 - pixel_y / h))
+        # Map through view window to get full-range ratio
+        y_ratio = self._view_f0 + view_ratio * (self._view_f1 - self._view_f0)
         f_min = self._freq_min
         f_max = self._freq_max
         mode = self._yscale_mode
@@ -737,8 +770,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
             bark_min = 13.0 * np.arctan(0.00076 * f_min) + 3.5 * np.arctan((f_min / 7500.0) ** 2)
             bark_max = 13.0 * np.arctan(0.00076 * f_max) + 3.5 * np.arctan((f_max / 7500.0) ** 2)
             bark = bark_min + y_ratio * (bark_max - bark_min)
-            # Approximate inverse: iterate to find freq from bark
-            freq = f_min + y_ratio * (f_max - f_min)  # initial guess
+            freq = f_min + y_ratio * (f_max - f_min)
             for _ in range(8):
                 b = 13.0 * np.arctan(0.00076 * freq) + 3.5 * np.arctan((freq / 7500.0) ** 2)
                 db = 13.0 * 0.00076 / (1 + (0.00076 * freq) ** 2) + 3.5 * 2 * freq / 7500 ** 2 / (1 + (freq / 7500) ** 2)
@@ -770,17 +802,33 @@ class SpectrogramGLWidget(QOpenGLWidget):
         f0 = int(max(0, min(n_freqs - 1, f_idx)))
         return float(self._data[f0, t0])
 
+    def _px_to_time(self, px: float) -> float:
+        """Map pixel x to absolute time (seconds) through view window."""
+        ratio = max(0.0, min(1.0, px / self.width()))
+        return (self._view_t0 + ratio * (self._view_t1 - self._view_t0)) * self.duration
+
+    def _time_to_px(self, secs: float) -> int:
+        """Map absolute time (seconds) to pixel x through view window."""
+        if self.duration <= 0:
+            return 0
+        t_frac = secs / self.duration
+        view_range = self._view_t1 - self._view_t0
+        if view_range <= 0:
+            return 0
+        ratio = (t_frac - self._view_t0) / view_range
+        return int(ratio * self.width())
+
     def mousePressEvent(self, event) -> None:
         if (event.button() == Qt.MouseButton.LeftButton
                 and self.playhead_pos >= 0 and self.duration > 0):
-            px = int(self.playhead_pos / self.duration * self.width())
+            px = self._time_to_px(self.playhead_pos)
             if abs(event.position().x() - px) <= 20:
                 self._dragging = True
                 self.setCursor(Qt.CursorShape.SizeHorCursor)
                 return
         # Click anywhere on the spectrogram seeks immediately
         if event.button() == Qt.MouseButton.LeftButton and self.duration > 0:
-            secs = max(0, min(event.position().x() / self.width(), 1.0)) * self.duration
+            secs = self._px_to_time(event.position().x())
             self.playhead_pos = secs
             self.seekRequested.emit(secs)
             self.update()
@@ -788,7 +836,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
     def mouseMoveEvent(self, event) -> None:
         if getattr(self, '_dragging', False) and self.duration > 0:
-            secs = max(0, min(event.position().x() / self.width(), 1.0)) * self.duration
+            secs = self._px_to_time(event.position().x())
             self.playhead_pos = secs
             if self._on_playhead_drag is not None:
                 self._on_playhead_drag(secs)
@@ -799,7 +847,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
                 pos = event.position()
                 px = int(pos.x())
                 self._cursor_x = px
-                secs = max(0, min(px / self.width(), 1.0)) * self.duration
+                secs = self._px_to_time(px)
                 freq = self._pixel_to_freq(pos.y())
                 db = self._get_cursor_db(secs, freq)
                 self.cursor_info.emit(secs, freq, db, px)
@@ -817,10 +865,95 @@ class SpectrogramGLWidget(QOpenGLWidget):
             self._dragging = False
             self.setCursor(Qt.CursorShape.ArrowCursor)
             if self.duration > 0:
-                secs = max(0, min(event.position().x() / self.width(), 1.0)) * self.duration
+                secs = self._px_to_time(event.position().x())
                 self.seekRequested.emit(secs)  # single seek on release
         else:
             super().mouseReleaseEvent(event)
+
+    # ── Zoom ───────────────────────────────────────────────────────
+
+    def wheelEvent(self, event) -> None:
+        if self.duration <= 0 or self.frequencies is None:
+            return super().wheelEvent(event)
+
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+
+        pos = event.position()
+        # Cursor position as fraction [0,1] within current view
+        fx = pos.x() / self.width()
+        fy = 1.0 - pos.y() / self.height()  # GL convention: bottom=0
+
+        # Current view range
+        t_range = self._view_t1 - self._view_t0
+        f_range = self._view_f1 - self._view_f0
+
+        # Zoom factor: 15% per step
+        steps = delta / 120.0
+        factor = 0.85 ** steps  # <1 = zoom in, >1 = zoom out
+
+        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+
+        if shift:
+            # Zoom frequency axis only
+            new_f_range = f_range * factor
+            new_f_range = max(0.01, min(1.0, new_f_range))
+            # Anchor at cursor freq position
+            f_anchor = self._view_f0 + fy * f_range
+            self._view_f0 = f_anchor - fy * new_f_range
+            self._view_f1 = self._view_f0 + new_f_range
+            # Clamp
+            if self._view_f0 < 0:
+                self._view_f1 -= self._view_f0
+                self._view_f0 = 0
+            if self._view_f1 > 1:
+                self._view_f0 -= (self._view_f1 - 1)
+                self._view_f1 = 1
+        else:
+            # Zoom time axis only
+            new_t_range = t_range * factor
+            new_t_range = max(0.005, min(1.0, new_t_range))
+            # Anchor at cursor time position
+            t_anchor = self._view_t0 + fx * t_range
+            self._view_t0 = t_anchor - fx * new_t_range
+            self._view_t1 = self._view_t0 + new_t_range
+            # Clamp
+            if self._view_t0 < 0:
+                self._view_t1 -= self._view_t0
+                self._view_t0 = 0
+            if self._view_t1 > 1:
+                self._view_t0 -= (self._view_t1 - 1)
+                self._view_t1 = 1
+
+        self._clamp_view()
+        self.update()
+        self.view_changed.emit()
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        """Reset to full view."""
+        self._view_t0, self._view_t1 = 0.0, 1.0
+        self._view_f0, self._view_f1 = 0.0, 1.0
+        self.update()
+        self.view_changed.emit()
+        super().mouseDoubleClickEvent(event)
+
+    def _clamp_view(self) -> None:
+        """Keep view within bounds and enforce minimum zoom."""
+        min_t = 0.005
+        min_f = 0.01
+        if self._view_t1 - self._view_t0 < min_t:
+            mid = (self._view_t0 + self._view_t1) / 2
+            self._view_t0 = mid - min_t / 2
+            self._view_t1 = mid + min_t / 2
+        if self._view_f1 - self._view_f0 < min_f:
+            mid = (self._view_f0 + self._view_f1) / 2
+            self._view_f0 = mid - min_f / 2
+            self._view_f1 = mid + min_f / 2
+        self._view_t0 = max(0.0, self._view_t0)
+        self._view_t1 = min(1.0, self._view_t1)
+        self._view_f0 = max(0.0, self._view_f0)
+        self._view_f1 = min(1.0, self._view_f1)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -901,6 +1034,10 @@ class SpectrogramGLWidget(QOpenGLWidget):
         glUniform1i(self._u_filled_cols, self._stream_filled)
         glUniform1i(self._u_total_cols, self._stream_total)
         glUniform1f(self._u_n_freqs, float(self._data.shape[0]) if self._data is not None else 1025.0)
+        glUniform1f(self._u_t_start, self._view_t0)
+        glUniform1f(self._u_t_end, self._view_t1)
+        glUniform1f(self._u_fview_min, self._view_f0)
+        glUniform1f(self._u_fview_max, self._view_f1)
 
         glBindVertexArray(self._vao)
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)

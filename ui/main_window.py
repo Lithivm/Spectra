@@ -478,6 +478,7 @@ class MainWindow(QMainWindow):
         # Cursor coordinate info — floating label above spectrogram
         self._spec.cursor_info.connect(self._on_cursor_info)
         self._spec.cursor_left.connect(self._on_cursor_left)
+        self._spec.view_changed.connect(self._on_view_changed)
 
         on_lang_change(self._retranslate)
 
@@ -641,7 +642,8 @@ class MainWindow(QMainWindow):
         if self._spec:
             self._spec._on_yscale_changed(scale)
             if self._y_axis and self._spec.frequencies is not None:
-                self._y_axis.set_data(self._spec.frequencies, scale)
+                self._y_axis.set_data(self._spec.frequencies, scale,
+                                      self._spec._view_f0, self._spec._view_f1)
 
     def _on_fft_size_changed(self, size_str: str) -> None:
         self._fft_size = int(size_str)
@@ -693,16 +695,20 @@ class MainWindow(QMainWindow):
             'mode': mode,
         })
         self._spec.hide_progress()
-        self._y_axis.set_data(freqs, self._spec._yscale_mode)
-        self._x_axis.set_data(self._analyzer.duration)
+        self._y_axis.set_data(freqs, self._spec._yscale_mode,
+                              self._spec._view_f0, self._spec._view_f1)
+        self._x_axis.set_data(self._analyzer.duration,
+                              self._spec._view_t0, self._spec._view_t1)
         self._colorbar.set_data(self._spec._lut_np)
 
     @safe_slot
     def _on_stream_init(self, freqs: np.ndarray, total_cols: int, duration: float) -> None:
         n_freqs = freqs.shape[0] if freqs is not None else 1025
         self._spec.begin_stream(n_freqs, total_cols, freqs, duration)
-        self._y_axis.set_data(freqs, self._spec._yscale_mode)
-        self._x_axis.set_data(duration)
+        self._y_axis.set_data(freqs, self._spec._yscale_mode,
+                              self._spec._view_f0, self._spec._view_f1)
+        self._x_axis.set_data(duration,
+                              self._spec._view_t0, self._spec._view_t1)
         self._colorbar.set_data(self._spec._lut_np)
 
     @safe_slot
@@ -879,6 +885,17 @@ class MainWindow(QMainWindow):
                 self._wave.set_playhead(0.0)
                 if self._spec is not None:
                     self._spec.set_playhead(0.0)
+
+    @safe_slot
+    def _on_view_changed(self) -> None:
+        """Sync axis widgets with spectrogram view window."""
+        spec = self._spec
+        if self._spec.frequencies is not None:
+            self._y_axis.set_data(spec.frequencies, spec._yscale_mode,
+                                  spec._view_f0, spec._view_f1)
+        if self._analyzer:
+            self._x_axis.set_data(self._analyzer.duration,
+                                  spec._view_t0, spec._view_t1)
 
     @safe_slot
     def _on_cursor_info(self, time_s: float, freq: float, db: float, px: int) -> None:
