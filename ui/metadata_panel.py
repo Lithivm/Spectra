@@ -160,6 +160,11 @@ class MetadataPanel(QWidget):
         super().__init__(parent)
         self._stored_analyzer: AudioAnalyzer | None = None
         self._stored_qa: dict | None = None
+        # Widget reference caches for fast _retranslate_with_data
+        self._section_labels: list[QLabel] = []
+        self._info_rows: list[_Row] = []
+        self._tag_rows: list[_Row] = []
+        self._analysis_rows: list[_AnalysisRow] = []
         self.setStyleSheet(f"""
             QWidget {{
                 background-color: {BG_SURFACE};
@@ -252,6 +257,10 @@ class MetadataPanel(QWidget):
                 item.widget().deleteLater()
         self._empty_label = None
         self._analysis_placeholder = None
+        self._section_labels.clear()
+        self._info_rows.clear()
+        self._tag_rows.clear()
+        self._analysis_rows.clear()
         self._indicator.setText("●")
         self._indicator.setStyleSheet(f"color: {TEXT_DIM}; font-size: 20px; background: transparent; border: none;")
 
@@ -262,7 +271,9 @@ class MetadataPanel(QWidget):
         self._qa_analyzer = analyzer  # keep for later background analysis
 
         # TECHNICAL
-        self._content_layout.addWidget(_section_label(t("技术信息", "TECHNICAL")))
+        sec = _section_label(t("技术信息", "TECHNICAL"))
+        self._section_labels.append(sec)
+        self._content_layout.addWidget(sec)
         self._content_layout.addWidget(_divider())
 
         t_info = time.perf_counter()
@@ -272,23 +283,30 @@ class MetadataPanel(QWidget):
         hi_keys = {t("采样率", "Sample Rate"), t("声道", "Channels"), t("时长", "Duration")}
         for k, v in info.items():
             color = ACCENT if k in hi_keys else TEXT_PRI
-            self._content_layout.addWidget(_Row(k, str(v), value_color=color))
+            row = _Row(k, str(v), value_color=color)
+            self._info_rows.append(row)
+            self._content_layout.addWidget(row)
 
         # TAGS
         if analyzer.metadata:
-            self._content_layout.addWidget(_section_label(t("标签", "TAGS")))
+            sec = _section_label(t("标签", "TAGS"))
+            self._section_labels.append(sec)
+            self._content_layout.addWidget(sec)
             self._content_layout.addWidget(_divider())
             skip = {"filename", "filepath", "sample_rate", "bitrate", "channels", "mime_type", "duration"}
-            # Generic metadata keys that don't come from audio tags
             _GENERIC = {"format": ("格式", "Format")}
             for k, v in analyzer.metadata.items():
                 if k in skip:
                     continue
                 zh, en = _GENERIC.get(k) or _TAG_TR.get(k, (k, k))
-                self._content_layout.addWidget(_Row(t(zh, en), str(v)))
+                row = _Row(t(zh, en), str(v))
+                self._tag_rows.append(row)
+                self._content_layout.addWidget(row)
 
         # ANALYSIS — placeholder, filled by load_analysis()
-        self._content_layout.addWidget(_section_label(t("分析", "ANALYSIS")))
+        sec = _section_label(t("分析", "ANALYSIS"))
+        self._section_labels.append(sec)
+        self._content_layout.addWidget(sec)
         self._content_layout.addWidget(_divider())
         self._analysis_placeholder = QLabel(t("正在分析…", "Analyzing…"))
         self._analysis_placeholder.setStyleSheet(f"""
@@ -320,8 +338,7 @@ class MetadataPanel(QWidget):
         if qa:
             clip = qa.get("clipping", {})
             if clip.get("ok"):
-                self._content_layout.addWidget(
-                    _AnalysisRow(True, t("削波", "Clipping"), t("未检测到削波", "No clipping detected")))
+                row = _AnalysisRow(True, t("削波", "Clipping"), t("未检测到削波", "No clipping detected"))
             else:
                 n = clip.get("count", 0)
                 ms = clip.get("longest_ms", 0)
@@ -330,20 +347,20 @@ class MetadataPanel(QWidget):
                 detail = f"{n} events, max {ms}ms"
                 if hard > 0 or soft > 0:
                     detail += f"  ({hard} hard / {soft} soft)"
-                self._content_layout.addWidget(
-                    _AnalysisRow(False, t("削波", "Clipping"), detail))
+                row = _AnalysisRow(False, t("削波", "Clipping"), detail)
+            self._analysis_rows.append(row)
+            self._content_layout.addWidget(row)
 
             ups = qa.get("upsampling", {})
             chz = ups.get("cutoff_hz", 0)
             nyq_hz = ups.get("nyq_hz", 0)
             if ups.get("ok"):
-                self._content_layout.addWidget(
-                    _AnalysisRow(True, t("高频", "Hi-freq"), t("正常", "Normal")))
+                row = _AnalysisRow(True, t("高频", "Hi-freq"), t("正常", "Normal"))
             else:
                 pct = f" ({chz / nyq_hz:.0%} Nyq)" if nyq_hz > 0 else ""
-                self._content_layout.addWidget(
-                    _AnalysisRow(False, t("高频", "Hi-freq"),
-                                 f"{chz/1000:.1f} kHz{pct}"))
+                row = _AnalysisRow(False, t("高频", "Hi-freq"), f"{chz/1000:.1f} kHz{pct}")
+            self._analysis_rows.append(row)
+            self._content_layout.addWidget(row)
 
             dr = qa.get("dynamic_range", {})
             dr_val = dr.get("dr", 0)
@@ -353,23 +370,27 @@ class MetadataPanel(QWidget):
                 label, ok, warn = t("正常", "Normal"), True, False
             else:
                 label, ok, warn = t("压缩", "Compressed"), False, True
-            self._content_layout.addWidget(
-                _AnalysisRow(ok, t("动态范围", "Dynamics"), f"DR {dr_val:.1f} — {label}", warn=warn))
+            row = _AnalysisRow(ok, t("动态范围", "Dynamics"), f"DR {dr_val:.1f} — {label}", warn=warn)
+            self._analysis_rows.append(row)
+            self._content_layout.addWidget(row)
 
             # ── LUFS (EBU R128) ──
             loud = qa.get("loudness", {})
             if loud:
                 il = loud.get("integrated_lufs", 0)
-                self._content_layout.addWidget(
-                    _Row("LUFS (I)", f"{il:.1f} LUFS"))
+                row = _Row("LUFS (I)", f"{il:.1f} LUFS")
+                self._info_rows.append(row)
+                self._content_layout.addWidget(row)
 
                 stl = loud.get("short_term_lufs", 0)
-                self._content_layout.addWidget(
-                    _Row("LUFS (S)", f"{stl:.1f} LUFS"))
+                row = _Row("LUFS (S)", f"{stl:.1f} LUFS")
+                self._info_rows.append(row)
+                self._content_layout.addWidget(row)
 
                 lra = loud.get("lra_lu", 0)
-                self._content_layout.addWidget(
-                    _Row("LRA", f"{lra:.1f} LU" if lra > 0 else "N/A"))
+                row = _Row("LRA", f"{lra:.1f} LU" if lra > 0 else "N/A")
+                self._info_rows.append(row)
+                self._content_layout.addWidget(row)
 
             # ── Additional metrics ──
             peak_db = qa.get("peak_db", None)
@@ -378,10 +399,14 @@ class MetadataPanel(QWidget):
                 label = f"{peak_db:.1f} dB"
                 if tp_db is not None and tp_db > peak_db:
                     label += f"  (TP {tp_db:.1f})"
-                self._content_layout.addWidget(_Row(t("峰值", "Peak"), label))
+                row = _Row(t("峰值", "Peak"), label)
+                self._info_rows.append(row)
+                self._content_layout.addWidget(row)
             rms_val = qa.get("rms", None)
             if rms_val is not None:
-                self._content_layout.addWidget(_Row("RMS", f"{rms_val:.4f}"))
+                row = _Row("RMS", f"{rms_val:.4f}")
+                self._info_rows.append(row)
+                self._content_layout.addWidget(row)
         else:
             self._content_layout.addWidget(
                 _Row("", t("分析不可用", "Analysis unavailable")))
@@ -415,35 +440,30 @@ class MetadataPanel(QWidget):
                 zh, en = _GENERIC.get(k) or _TAG_TR.get(k, (k, k))
                 tag_items.append((t(zh, en), str(v)))
 
-        # Walk layout children and update in-place
-        _SECTIONS = {"技术信息", "TECHNICAL", "标签", "TAGS", "分析", "ANALYSIS"}
-        row_idx = 0
-        analysis_idx = 0
-        for i in range(self._content_layout.count()):
-            w = self._content_layout.itemAt(i).widget()
-            if w is None:
-                continue
-            if isinstance(w, QLabel) and w.text() in _SECTIONS:
-                txt = w.text()
-                if txt in ("技术信息", "TECHNICAL"):
-                    w.setText(t("技术信息", "TECHNICAL"))
-                elif txt in ("标签", "TAGS"):
-                    w.setText(t("标签", "TAGS"))
-                elif txt in ("分析", "ANALYSIS"):
-                    w.setText(t("分析", "ANALYSIS"))
-            elif isinstance(w, _Row):
-                if row_idx < len(info_items):
-                    k, v = info_items[row_idx]
-                    w.set_texts(k, str(v))
-                elif row_idx < len(info_items) + len(tag_items):
-                    ti = row_idx - len(info_items)
-                    w.set_texts(*tag_items[ti])
-                # else: analysis metric rows (LUFS, Peak, RMS) — keys are not translated
-                row_idx += 1
-            elif isinstance(w, _AnalysisRow):
-                if qa:
-                    self._update_analysis_row(w, analysis_idx, qa)
-                analysis_idx += 1
+        # Update section labels directly from cached references
+        for i, lbl in enumerate(self._section_labels):
+            if i == 0:
+                lbl.setText(t("技术信息", "TECHNICAL"))
+            elif i == 1 and len(self._section_labels) >= 3:
+                lbl.setText(t("标签", "TAGS"))
+            elif i == len(self._section_labels) - 1:
+                lbl.setText(t("分析", "ANALYSIS"))
+
+        # Update info rows
+        for i, row in enumerate(self._info_rows):
+            if i < len(info_items):
+                k, v = info_items[i]
+                row.set_texts(k, str(v))
+
+        # Update tag rows
+        for i, row in enumerate(self._tag_rows):
+            if i < len(tag_items):
+                row.set_texts(*tag_items[i])
+
+        # Update analysis rows
+        if qa:
+            for i, row in enumerate(self._analysis_rows):
+                self._update_analysis_row(row, i, qa)
 
     @staticmethod
     def _update_analysis_row(row: _AnalysisRow, idx: int, qa: dict) -> None:

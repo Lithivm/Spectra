@@ -136,8 +136,12 @@ def _rgb_lerp(stops: list, t: float) -> tuple[float, float, float]:
     return stops[-1][1]
 
 
+_lut_cache: dict[str, list[QColor]] = {}
+_lut_np_cache: dict[str, np.ndarray] = {}
+
+
 def build_lut(palette_name: str = "rx") -> list[QColor]:
-    """Precompute 256-entry colour LUT.
+    """Precompute 256-entry colour LUT. Results are cached per palette name.
 
     Three-region dB→brightness curve:
       DB_MIN … NOISE_DB : power-law crush  →  near-black  (deep background)
@@ -146,6 +150,10 @@ def build_lut(palette_name: str = "rx") -> list[QColor]:
 
     Gamma = 1.0 (linear — curve handles the shaping).
     """
+    cached = _lut_cache.get(palette_name)
+    if cached is not None:
+        return cached
+
     stops = _PALETTE_STOPS.get(palette_name, _PALETTE_STOPS["rx"])
 
     # Normalised positions
@@ -173,15 +181,23 @@ def build_lut(palette_name: str = "rx") -> list[QColor]:
         t = t ** GAMMA
         r, g, b = _rgb_lerp(stops, t)
         lut.append(QColor(int(r * 255), int(g * 255), int(b * 255), 250))
+
+    _lut_cache[palette_name] = lut
     return lut
 
 
 def build_lut_np(palette_name: str = "rx") -> np.ndarray:
-    """Return shape=(256,4) uint8 numpy LUT for vectorised rendering."""
+    """Return shape=(256,4) uint8 numpy LUT for vectorised rendering. Cached."""
+    cached = _lut_np_cache.get(palette_name)
+    if cached is not None:
+        return cached
+
     qcolors = build_lut(palette_name)
     arr = np.zeros((LUT_SIZE, 4), dtype=np.uint8)
     for i, c in enumerate(qcolors):
         arr[i] = [c.red(), c.green(), c.blue(), c.alpha()]
+
+    _lut_np_cache[palette_name] = arr
     return arr
 
 
@@ -688,7 +704,31 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
     # ── OpenGL lifecycle ────────────────────────────────────────────
 
+    def _cleanup_gl(self) -> None:
+        """Release GL resources. Must be called with a current context."""
+        if not self.isValid():
+            return
+        self.makeCurrent()
+        try:
+            if self._tex_id is not None:
+                glDeleteTextures([self._tex_id])
+                self._tex_id = None
+            if self._lut_tex_id is not None:
+                glDeleteTextures([self._lut_tex_id])
+                self._lut_tex_id = None
+            if self._gl_program is not None:
+                glDeleteProgram(self._gl_program)
+                self._gl_program = None
+            if self._vao is not None:
+                from OpenGL.GL import glDeleteVertexArrays
+                glDeleteVertexArrays(1, [self._vao])
+                self._vao = None
+        finally:
+            self.doneCurrent()
+
     def initializeGL(self) -> None:
+        # Clean up old resources if context was recreated
+        self._cleanup_gl()
         glClearColor(0, 0, 0, 1)
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
 
@@ -741,6 +781,10 @@ class SpectrogramGLWidget(QOpenGLWidget):
         if self._data is not None:
             self._upload_texture()
 
+    def closeEvent(self, event) -> None:
+        self._cleanup_gl()
+        super().closeEvent(event)
+
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
         # Only create QPainter when there's an overlay to draw —
@@ -779,22 +823,26 @@ class SpectrogramGLWidget(QOpenGLWidget):
         f_min = self._freq_min
         f_max = self._freq_max
         mode = self._yscale_mode
+
+        # 使用 math 模块做标量运算，比 numpy 快
         if mode == "log":
             if f_min <= 0:
                 f_min = 1.0
             return f_min * (f_max / f_min) ** y_ratio
         elif mode == "mel":
-            mel_min = 2595.0 * np.log10(1.0 + f_min / 700.0)
-            mel_max = 2595.0 * np.log10(1.0 + f_max / 700.0)
+            from math import log10, pow as mpow
+            mel_min = 2595.0 * log10(1.0 + f_min / 700.0)
+            mel_max = 2595.0 * log10(1.0 + f_max / 700.0)
             mel = mel_min + y_ratio * (mel_max - mel_min)
-            return 700.0 * (10.0 ** (mel / 2595.0) - 1.0)
+            return 700.0 * (mpow(10.0, mel / 2595.0) - 1.0)
         elif mode == "bark":
-            bark_min = 13.0 * np.arctan(0.00076 * f_min) + 3.5 * np.arctan((f_min / 7500.0) ** 2)
-            bark_max = 13.0 * np.arctan(0.00076 * f_max) + 3.5 * np.arctan((f_max / 7500.0) ** 2)
+            from math import atan
+            bark_min = 13.0 * atan(0.00076 * f_min) + 3.5 * atan((f_min / 7500.0) ** 2)
+            bark_max = 13.0 * atan(0.00076 * f_max) + 3.5 * atan((f_max / 7500.0) ** 2)
             bark = bark_min + y_ratio * (bark_max - bark_min)
             freq = f_min + y_ratio * (f_max - f_min)
             for _ in range(8):
-                b = 13.0 * np.arctan(0.00076 * freq) + 3.5 * np.arctan((freq / 7500.0) ** 2)
+                b = 13.0 * atan(0.00076 * freq) + 3.5 * atan((freq / 7500.0) ** 2)
                 db = 13.0 * 0.00076 / (1 + (0.00076 * freq) ** 2) + 3.5 * 2 * freq / 7500 ** 2 / (1 + (freq / 7500) ** 2)
                 if db < 1e-12:
                     break

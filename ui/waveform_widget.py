@@ -77,16 +77,20 @@ class WaveformWidget(QWidget):
         rh = self.height()
         n = len(envelope)
 
-        points_upper = []
-        for i, val in enumerate(envelope):
-            x = int((i / max(1, n - 1)) * rw) if n > 1 else int(rw // 2)
-            y = int(rh // 2 - val * rh // 2)
-            points_upper.append((x, y))
+        # 向量化计算所有坐标点
+        indices = np.arange(n, dtype=np.float64)
+        xs = (indices / max(1, n - 1) * rw).astype(np.int32) if n > 1 else np.full(n, rw // 2, dtype=np.int32)
+        half = rh // 2
+        ys_upper = (half - envelope * half).astype(np.int32)
+        ys_lower = half + (half - ys_upper)
 
-        points_lower = [(x, rh // 2 + (rh // 2 - y)) for x, y in points_upper]
-        full_path = points_upper + list(reversed(points_lower))
+        # 上半部分 + 下半部分反转
+        all_x = np.concatenate([xs, xs[::-1]])
+        all_y = np.concatenate([ys_upper, ys_lower[::-1]])
 
-        self._cached_polygon = QPolygonF(QPointF(x, y) for x, y in full_path) if full_path else None
+        self._cached_polygon = QPolygonF(
+            QPointF(float(x), float(y)) for x, y in zip(all_x, all_y)
+        ) if n > 0 else None
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

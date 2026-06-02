@@ -17,6 +17,7 @@ from .load import load_audio
 from .metadata import get_metadata
 
 _librosa_ready = False
+_librosa_lock = __import__('threading').Lock()
 
 
 def _ensure_librosa() -> None:
@@ -24,13 +25,16 @@ def _ensure_librosa() -> None:
     global _librosa_ready
     if _librosa_ready:
         return
-    import warnings
-    import librosa
-    import pyfftw.interfaces.scipy_fft as fftw_scipy
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=FutureWarning)
-        librosa.set_fftlib(fftw_scipy)
-    _librosa_ready = True
+    with _librosa_lock:
+        if _librosa_ready:
+            return
+        import warnings
+        import librosa
+        import pyfftw.interfaces.scipy_fft as fftw_scipy
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning)
+            librosa.set_fftlib(fftw_scipy)
+        _librosa_ready = True
 
 
 # Mixin imports are safe at module level — with their librosa/pyloudnorm

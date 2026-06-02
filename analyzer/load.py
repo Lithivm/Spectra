@@ -66,27 +66,52 @@ def _decode_with_av(filepath: Path) -> tuple[np.ndarray, int] | None:
             stream = audio_streams[0]
             sr = stream.sample_rate
 
-            chunks = []
+            # 尝试从流元数据预估总采样数，减少内存重分配
+            est_total = 0
+            if stream.duration and stream.time_base:
+                est_total = int(stream.duration * stream.time_base * sr)
+            elif stream.frames > 0:
+                est_total = stream.frames
+
+            chunks: list[np.ndarray] = []
+            total_samples = 0
+            n_channels = 0
+
             for frame in container.decode(stream):
-                # to_ndarray() 返回 (channels, samples) 对于 planar 格式
-                # 或 (1, samples*channels) 对于 packed 格式
                 arr = frame.to_ndarray()
-                # 统一转为 float32
                 if arr.dtype != np.float32:
                     arr = arr.astype(np.float32)
-                    # 整数格式归一化: 用 bits 替代手工枚举格式名，覆盖 s16/s24/s32/s64 等所有位深
                     fmt_name = frame.format.name
                     if not fmt_name.startswith(('flt', 'dbl')):
                         arr /= float(1 << (frame.format.bits - 1))
+
+                # 从首帧确定通道数
+                if n_channels == 0:
+                    n_channels = arr.shape[0] if arr.ndim > 1 else 1
+
                 chunks.append(arr)
+                total_samples += arr.shape[1] if arr.ndim > 1 else arr.shape[0]
 
             if not chunks:
                 return None
 
-            data = np.concatenate(chunks, axis=1).astype(np.float32)
-            # 确保 shape 是 (channels, samples)
-            if data.ndim == 1:
-                data = data[np.newaxis, :]
+            # 预分配目标数组，逐块拷贝，避免 concatenate 的临时拷贝开销
+            if n_channels > 1:
+                data = np.empty((n_channels, total_samples), dtype=np.float32)
+                offset = 0
+                for blk in chunks:
+                    n = blk.shape[1]
+                    data[:, offset:offset + n] = blk
+                    offset += n
+            else:
+                data = np.empty((1, total_samples), dtype=np.float32)
+                offset = 0
+                for blk in chunks:
+                    flat = blk.ravel() if blk.ndim > 1 else blk
+                    n = len(flat)
+                    data[0, offset:offset + n] = flat
+                    offset += n
+
             return data, sr
 
         finally:

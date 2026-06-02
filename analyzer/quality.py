@@ -193,11 +193,11 @@ class _QualityMixin:
         """EBU R128 integrated loudness, short-term, LRA, true-peak (BS.1770-4)."""
         import pyloudnorm as pyln
         if audio.ndim == 1:
-            audio_st = np.column_stack([audio, audio])
+            audio_st = np.repeat(audio[:, np.newaxis], 2, axis=1)
         else:
             audio_st = audio.T[:, :2]
         if audio_st.shape[1] == 1:
-            audio_st = np.column_stack([audio_st[:, 0], audio_st[:, 0]])
+            audio_st = np.repeat(audio_st, 2, axis=1)
 
         TARGET_SR = 12000
         if sr > TARGET_SR * 1.5:
@@ -205,7 +205,7 @@ class _QualityMixin:
             factor = max(1, sr // TARGET_SR)
             meter_sr = sr // factor
             ch0 = decimate(audio_st[:, 0].astype(np.float64), factor, zero_phase=True)
-            audio_meter = np.column_stack([ch0, ch0]).astype(np.float64)
+            audio_meter = np.repeat(ch0[:, np.newaxis].astype(np.float64), 2, axis=1)
         else:
             meter_sr = sr
             audio_meter = audio_st.astype(np.float64)

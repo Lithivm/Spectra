@@ -78,8 +78,8 @@ class PlaybackEngine(QObject):
     def stop(self) -> None:
         """Stop and reset to beginning."""
         self._close_stream()  # may trigger _on_stream_finished
-        self._start_frame = 0
         with self._cb_lock:
+            self._start_frame = 0
             self._cb_frame = 0
         self._set_state("stopped")
 
@@ -94,8 +94,8 @@ class PlaybackEngine(QObject):
         was_playing = self._state == "playing"
         if was_playing:
             self._close_stream()
-        self._start_frame = frame
         with self._cb_lock:
+            self._start_frame = frame
             self._cb_frame = frame
         if was_playing:
             self._start_stream()
@@ -103,8 +103,8 @@ class PlaybackEngine(QObject):
     def track_position(self, seconds: float) -> None:
         """Update frame counters to match visual drag — no stream restart."""
         frame = max(0, min(int(seconds * self._sample_rate), self._total_frames - 1))
-        self._start_frame = frame
         with self._cb_lock:
+            self._start_frame = frame
             self._cb_frame = frame
 
     def get_position(self) -> float:
@@ -186,8 +186,8 @@ class PlaybackEngine(QObject):
             raise sd.CallbackStop
 
     def _on_stream_finished(self) -> None:
-        self._start_frame = 0
         with self._cb_lock:
+            self._start_frame = 0
             self._cb_frame = 0
         self._set_state("stopped")
 

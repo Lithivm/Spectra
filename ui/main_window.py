@@ -929,8 +929,8 @@ class MainWindow(QMainWindow):
                          old.finished, old.fading):
                 try:
                     sig.disconnect()
-                except Exception:
-                    pass
+                except TypeError:
+                    pass  # signal was never connected
             self._hold_ref(old)
 
     def _cancel_quality(self) -> None:
@@ -941,8 +941,8 @@ class MainWindow(QMainWindow):
             for sig in (old.finished, old.progress):
                 try:
                     sig.disconnect()
-                except Exception:
-                    pass
+                except TypeError:
+                    pass  # signal was never connected
             self._hold_ref(old)
 
     def _cancel_load(self) -> None:
@@ -953,8 +953,8 @@ class MainWindow(QMainWindow):
             for sig in (old.loaded, old.error):
                 try:
                     sig.disconnect()
-                except Exception:
-                    pass
+                except TypeError:
+                    pass  # signal was never connected
             self._hold_ref(old)
 
     def _hold_ref(self, worker: QThread) -> None:
