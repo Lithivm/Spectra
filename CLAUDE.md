@@ -83,9 +83,11 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
 
 **相位重分配频谱图** — iZotope RX 风格（Auger-Flandrin），瞬时频率 + 群延迟一阶导数修正
 
-**削波检测** — flat-top 检测，`np.diff` 边缘检测替代 while 循环
+**削波检测** — flat-top 检测，`np.diff` 边缘检测，MIN_FLAT=1（单样本峰值也报削波）。硬/软分类用二阶导数（曲率）：平坦=硬削波，弯曲=软削波
 
-**动态范围** — 向量化 `librosa.feature.rms` 替代逐帧循环
+**高频截止检测** — 多段中位数频谱 + 能量 shelf 检测。估计噪底（上 10% bin 中位数），从高频向低频找能量上升 >6dB 的转折点。confidence 基于信号段与噪底对比度
+
+**动态范围** — P95-P10 帧 RMS 差值（TT DR Meter 标准），stride 视图零拷贝，帧长 4096 / hop 2048
 
 **LUFS (EBU R128)** — `pyloudnorm`，降采样保护：`sr > 12000 * 1.5` 才做 decimate
 
@@ -105,7 +107,9 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
 - **视图状态**：`_view_t0/_view_t1`（时间窗口）、`_view_f0/_view_f1`（频率窗口），通过 shader uniform `u_t_start/u_t_end/u_fview_min/u_fview_max` 实现 GPU 端缩放
 - **光标信息**：`setMouseTracking(True)`，`mouseMoveEvent` 发射 `cursor_info(time, freq, dB, px)` 信号
 - **滚轮缩放**：`wheelEvent` 以光标位置为中心缩放时间轴，Shift+滚轮缩放频率轴，双击重置
-- **光标竖线**：hover 时绘制跟随鼠标的竖线，离开时清除
+- **光标竖线**：hover 时跟随鼠标；播放中鼠标离开声谱区时跟随播放进度；鼠标回到声谱区立即切回跟随鼠标
+- **GL 资源管理**：`_cleanup_gl(need_context)` 释放纹理/program/VAO，`initializeGL` 传 `need_context=False`（Qt 已持有上下文），`closeEvent` 传 `True`
+- **LUT 缓存**：`build_lut` / `build_lut_np` 按配色名缓存结果，避免重复计算
 
 #### 坐标轴组件
 - `_YAxisWidget` — 频率轴（左），支持 `view_f0/view_f1` 参数，过滤视窗外的刻度
@@ -115,10 +119,12 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
 
 ### 2.7 音频播放 — `ui/playback_engine.py`
 
-- 基于 `sounddevice.OutputStream`，回调帧计数器追踪位置（无 DAC time 抖动）
+- 基于 `sounddevice.OutputStream`，WASAPI 共享模式（低延迟 ~10ms）
+- 回调帧计数器追踪位置（无 DAC time 抖动），`_cb_frame`/`_start_frame` 统一在 `_cb_lock` 内更新
 - 播放/暂停/停止/Seek + 拖拽跟踪 (`track_position`)
-- `_cb_frame` 读写加锁，跨线程安全
 - `pause()` 在 `_close_stream()`（可能触发 `_on_stream_finished` 覆盖计数器）之后恢复保存的位置
+- 启动时探测 WASAPI 设备默认采样率，`load()` 时自动重采样（soxr 优先，scipy 回退）
+- `latency='high'` 使用较大缓冲区避免 underrun
 
 ### 2.8 播放进度条 — `_PlaybackSlider`（`ui/main_window.py`）
 
@@ -165,7 +171,8 @@ MainWindow (QMainWindow)
 
 **i18n 系统**
 - `lang.t("中文", "English")` 统一翻译入口
-- `on_lang_change(callback)` 注册回调，返回 `unsubscribe()` 函数防泄漏
+- `on_lang_change(callback)` 注册回调，绑定方法用 `weakref.WeakMethod` 自动管理生命周期
+- `toggle_lang()` 自动清理失效弱引用；返回 `unsubscribe()` 函数防泄漏
 
 **样式系统 (`ui.styles`)**
 - 全局 CSS token：`BG_BASE`, `BG_SURFACE`, `TEXT_PRI`, `ACCENT` 等
@@ -173,6 +180,10 @@ MainWindow (QMainWindow)
 
 **safe_slot 装饰器**
 - 所有 Qt signal-slot 主线程回调使用 `@safe_slot` 装饰器
+
+**MetadataPanel 语言切换**
+- 存储 `_section_labels`、`_info_rows`、`_tag_rows`、`_analysis_rows` widget 引用列表
+- `_retranslate_with_data` 直接遍历引用列表，无需遍历布局树
 
 ---
 
@@ -190,11 +201,12 @@ MainWindow (QMainWindow)
 |------|------|
 | **PyQt6** | 跨平台桌面，OpenGL 集成良好，支持高 DPI |
 | **PyAV (libav)** | 原生解码，避免 Python 封装层损耗 |
-| **librosa** | STFT/mel/MFCC 标准库 |
+| **librosa** | STFT/mel/MFCC 标准库（延迟加载，quality.py 已不依赖） |
 | **pyloudnorm** | EBU R128 响度标准 |
 | **mutagen** | 纯 Python，多格式元数据 |
 | **pyfftw** | FFTW Python 绑定，替代 numpy.fft |
-| **sounddevice** | 轻量 PortAudio 绑定，音频播放 |
+| **sounddevice** | 轻量 PortAudio 绑定，WASAPI 共享模式播放 |
+| **soxr** | 高质量重采样（WASAPI 采样率适配，优先于 scipy） |
 
 ---
 
@@ -273,5 +285,5 @@ analyzer/core.py
 
 ---
 
-> 最后更新: 2026-05-30
+> 最后更新: 2026-06-02
 > 基于文件: main.py, ui/main_window.py, analyzer/core.py, analyzer/_state.py, analyzer/spectrum.py, analyzer/quality.py, analyzer/load.py, analyzer/metadata.py, analyzer/batch.py, analyzer/palette.py, ui/spectrogram_widget.py, ui/metadata_panel.py, ui/waveform_widget.py, ui/playback_engine.py, ui/batch_dialog.py, ui/styles.py, ui/shaders/spectrogram.vert, ui/shaders/spectrogram.frag, lang.py, spectra.spec
