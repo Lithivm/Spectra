@@ -45,3 +45,4 @@ Thumbs.db
 *.tmp
 *.log
 /release-check/
+.claude/worktrees/
