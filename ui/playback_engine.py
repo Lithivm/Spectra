@@ -195,6 +195,7 @@ class PlaybackEngine(QObject):
                 channels=self._audio.shape[0],
                 dtype='float32',
                 blocksize=0,
+                latency='high',      # use larger buffer to avoid underruns
                 callback=self._callback,
                 finished_callback=self._on_stream_finished,
                 **kwargs,
