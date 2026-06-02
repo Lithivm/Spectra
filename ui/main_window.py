@@ -1049,18 +1049,21 @@ class MainWindow(QMainWindow):
         self._cursor_label.adjustSize()
         # Position: center on cursor x, vertically centered in filename row
         SIDE = 36  # YAxis width
-        label_x = SIDE + px - self._cursor_label.width() // 2
+        lw = self._cursor_label.width()
+        label_x = SIDE + px - lw // 2
+        # Clamp so label stays within spectrogram area
+        spec_right = self._spec.mapToParent(self._spec.rect().topRight()).x()
+        label_x = max(SIDE, min(label_x, spec_right - lw))
         label_y = (SIDE - self._cursor_label.height()) // 2
-        self._cursor_label.move(max(0, label_x), max(0, label_y))
+        self._cursor_label.move(label_x, max(0, label_y))
         self._cursor_label.show()
         self._filename_widget.hide()
 
     @safe_slot
     def _on_cursor_left(self) -> None:
         """Restore filename when cursor leaves spectrogram."""
-        if not self._playback.is_playing:
-            self._cursor_label.hide()
-            self._filename_widget.show()
+        self._cursor_label.hide()
+        self._filename_widget.show()
 
     @safe_slot
     def _on_quality_done(self, qa: Any) -> None:
