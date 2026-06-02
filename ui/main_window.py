@@ -184,6 +184,8 @@ class _PlaybackSlider(QWidget):
         self.setMouseTracking(True)
         self._hover = False
         self._resizing = False  # guard against recursive resizeEvent
+        self._view_t0 = 0.0   # spectrogram zoom range (fraction of duration)
+        self._view_t1 = 1.0
 
     def setRange(self, minimum: int, maximum: int) -> None:
         self._maximum = maximum
@@ -192,6 +194,12 @@ class _PlaybackSlider(QWidget):
         if self._value != value and not self._dragging:
             self._value = max(0, min(self._maximum, value))
             self.update()
+
+    def set_view_range(self, t0: float, t1: float) -> None:
+        """Update the spectrogram zoom range (0–1 fractions of duration)."""
+        self._view_t0 = t0
+        self._view_t1 = t1
+        self.update()
 
     def value(self) -> int:
         return self._value
@@ -258,6 +266,14 @@ class _PlaybackSlider(QWidget):
         painter.setBrush(QColor(BORDER_MID))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(track_rect, 2, 2)
+
+        # Zoom indicator — highlight the visible spectrogram range
+        if self._view_t0 > 0.0 or self._view_t1 < 1.0:
+            zl = pad + int(w * self._view_t0)
+            zr = pad + int(w * self._view_t1)
+            zoom_rect = QRectF(zl, cy - track_h // 2, max(zr - zl, 1), track_h)
+            painter.setBrush(QColor(BORDER_MID).lighter(140))
+            painter.drawRoundedRect(zoom_rect, 2, 2)
 
         # Progress fill
         if self._maximum > 0:
@@ -1020,7 +1036,7 @@ class MainWindow(QMainWindow):
 
     @safe_slot
     def _on_view_changed(self) -> None:
-        """Sync axis widgets with spectrogram view window."""
+        """Sync axis widgets and slider with spectrogram view window."""
         spec = self._spec
         if self._spec.frequencies is not None:
             self._y_axis.set_data(spec.frequencies, spec._yscale_mode,
@@ -1028,6 +1044,7 @@ class MainWindow(QMainWindow):
         if self._analyzer:
             self._x_axis.set_data(self._analyzer.duration,
                                   spec._view_t0, spec._view_t1)
+        self._progress_slider.set_view_range(spec._view_t0, spec._view_t1)
 
     @safe_slot
     def _on_cursor_info(self, time_s: float, freq: float, db: float, px: int) -> None:

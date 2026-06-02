@@ -202,9 +202,13 @@ class _SpectrumMixin:
             cnt = min(block_cols, raw_cols - c0)
             offset = c0 * hop
 
-            for j in range(cnt):
-                s = offset + j * hop
-                buf_time[:, j] = audio_padded[s:s + n_fft] * win
+            # Vectorized frame extraction via stride tricks (replaces per-column loop)
+            # shape=(n_fft, cnt): rows are samples within a frame, columns are frames
+            # stride[0]=1 element (adjacent samples), stride[1]=hop elements (next frame start)
+            strides = (audio_padded.strides[0], audio_padded.strides[0] * hop)
+            frames = np.lib.stride_tricks.as_strided(
+                audio_padded[offset:], shape=(n_fft, cnt), strides=strides)
+            buf_time[:, :cnt] = frames * win[:, None]
             if cnt < block_cols:
                 buf_time[:, cnt:] = 0.0
 
@@ -290,12 +294,9 @@ class _SpectrumMixin:
         freqs_combined = np.concatenate(band_freqs)
 
         if not np.all(np.diff(freqs_combined) > 0):
-            mono_freqs = [freqs_combined[0]]
-            for f in freqs_combined[1:]:
-                if f > mono_freqs[-1]:
-                    mono_freqs.append(f)
-            freqs_combined = np.array(mono_freqs, dtype=np.float64)
-            mag_combined = mag_combined[:len(freqs_combined), :]
+            mask = np.concatenate([[True], np.diff(freqs_combined) > 0])
+            freqs_combined = freqs_combined[mask]
+            mag_combined = mag_combined[mask]
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -348,7 +349,11 @@ class _SpectrumMixin:
 
         # ── Reassignment coordinates ──
         eps = 1e-10
-        S_sq = np.abs(S) ** 2 + eps
+        # Compute squared magnitude once in float64 — avoids a second np.abs call
+        S_real = S.real.astype(np.float64)
+        S_imag = S.imag.astype(np.float64)
+        S_sq_f64 = S_real ** 2 + S_imag ** 2
+        S_sq = S_sq_f64 + eps
 
         omega_corr = np.imag(S_t * np.conj(S) / S_sq) / (2.0 * np.pi)
 
@@ -358,10 +363,7 @@ class _SpectrumMixin:
         n_freqs = len(freqs_base)
         n_frames = S.shape[1]
 
-        mag = np.abs(S).astype(np.float64)
-
-        mag_acc = np.zeros_like(mag)
-        weight = np.zeros_like(mag)
+        mag = np.sqrt(S_sq_f64)
 
         f_new_all = freqs_base[:, None] + omega_corr * sr
         f_new_all = np.clip(f_new_all, freqs_base[0], freqs_base[-1])
@@ -372,8 +374,11 @@ class _SpectrumMixin:
         t_new_all = np.clip(t_new_all, 0, n_frames - 1)
         t_idx_all = np.round(t_new_all).astype(int).clip(0, n_frames - 1)
 
-        np.add.at(mag_acc, (f_idx_all.ravel(), t_idx_all.ravel()), mag.ravel())
-        np.add.at(weight, (f_idx_all.ravel(), t_idx_all.ravel()), 1.0)
+        # np.bincount is ~5-10x faster than np.add.at for large arrays
+        flat_idx = (f_idx_all.ravel() * n_frames + t_idx_all.ravel()).astype(np.intp)
+        n_total = n_freqs * n_frames
+        mag_acc = np.bincount(flat_idx, weights=mag.ravel(), minlength=n_total).reshape(n_freqs, n_frames)
+        weight = np.bincount(flat_idx, minlength=n_total).reshape(n_freqs, n_frames).astype(np.float64)
 
         mag_acc /= np.maximum(weight, 1.0)
 

@@ -134,7 +134,8 @@
       "PowerShell(& \"C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" --version)",
       "PowerShell($env:PYTHONPATH = \"D:\\\\Claude code\\\\Spectra\"; & \"C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" -c \"import time; t0=time.perf_counter\\(\\); from analyzer._state import _stft_cache, _stft_lock; print\\(f'_state import: {time.perf_counter\\(\\)-t0:.3f}s'\\)\")",
       "PowerShell($env:PYTHONPATH = \"D:\\\\Claude code\\\\Spectra\"; & \"C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" -m pytest \"D:\\\\Claude code\\\\Spectra\\\\tests\" -x -q 2>&1)",
-      "Bash(ruff check *)"
+      "Bash(ruff check *)",
+      "PowerShell(python -c \"import ast; ast.parse\\(open\\('analyzer/quality.py', encoding='utf-8'\\).read\\(\\)\\); print\\('quality.py: OK'\\)\")"
     ]
   }
 }

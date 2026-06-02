@@ -30,7 +30,7 @@ class _QualityMixin:
             "true_peak_db":  tp_val,
             "rms":           round(self._compute_rms(audio), 6),
             "zero_crossing": self._compute_zcr(audio),
-            "loudness": self._measure_loudness(audio, sr, cancel_check),
+            "loudness": self._measure_loudness(audio, sr, cancel_check, tp_val),
         }
 
     # ------------------------------------------------------------------
@@ -81,20 +81,23 @@ class _QualityMixin:
         # Hard vs soft classification using second derivative (curvature)
         # Hard clip: flat top → 2nd derivative ≈ 0
         # Soft clip: curved top → 2nd derivative ≠ 0
+        lengths = clip_ends - clip_starts + 1
         hard_count = 0
-        for s, e in zip(clip_starts, clip_ends):
-            region_len = e - s + 1
-            if region_len >= 3:
-                # Use second derivative of the clip region
-                region = audio[s:e + 1]
-                d2 = np.abs(np.diff(region, n=2))
-                if np.max(d2) < eps * 10:
-                    hard_count += 1
-            elif region_len == 2:
-                # Two samples: check if they're at the same level
-                if abs(audio[s] - audio[e]) < eps:
-                    hard_count += 1
-            # Single sample: can't distinguish, count as soft
+
+        # length == 2: check if both samples are at the same level (vectorized)
+        mask_len2 = lengths == 2
+        if np.any(mask_len2):
+            s2 = clip_starts[mask_len2]
+            e2 = clip_ends[mask_len2]
+            hard_count += int(np.sum(np.abs(audio[s2] - audio[e2]) < eps))
+
+        # length >= 3: check curvature via 2nd derivative (regions vary in length)
+        mask_len3 = lengths >= 3
+        for s, e in zip(clip_starts[mask_len3], clip_ends[mask_len3]):
+            region = audio[s:e + 1]
+            d2 = np.abs(np.diff(region, n=2))
+            if np.max(d2) < eps * 10:
+                hard_count += 1
 
         return {
             "ok": False,
@@ -135,10 +138,12 @@ class _QualityMixin:
 
         window = np.hanning(seg_len).astype(np.float32)
         n_rfft = seg_len // 2 + 1
-        all_specs = np.empty((len(seg_starts), n_rfft), dtype=np.float64)
+        # Batch all segments into a 2D array for a single FFT call
+        segments = np.empty((len(seg_starts), seg_len), dtype=np.float32)
         for i, s in enumerate(seg_starts):
-            seg = audio[s:s + seg_len]
-            all_specs[i] = np.abs(np.fft.rfft(seg * window)) ** 2
+            segments[i] = audio[s:s + seg_len]
+        segments *= window  # broadcast window across all segments
+        all_specs = np.abs(np.fft.rfft(segments, axis=1)) ** 2
 
         med_spec = np.median(all_specs, axis=0)
         freqs = np.fft.rfftfreq(seg_len, 1.0 / sr)
@@ -212,26 +217,33 @@ class _QualityMixin:
 
         Uses ~100ms frames (4096 samples @ 44.1kHz) with 50% hop.
         Matches the DR meter convention used by TT DR Meter and similar tools.
+        Measures each channel separately and returns the maximum DR.
         """
         frame_len = 4096
         hop = frame_len // 2
-        n = len(audio)
-        n_frames = max(1, (n - frame_len) // hop + 1)
 
-        # Stride-based framing — zero copy
-        shape = (n_frames, frame_len)
-        strides = (audio.strides[0] * hop, audio.strides[0])
-        frames = np.lib.stride_tricks.as_strided(audio, shape=shape, strides=strides)
+        def _dr_single_channel(ch: np.ndarray) -> float:
+            n = len(ch)
+            n_frames = max(1, (n - frame_len) // hop + 1)
+            shape = (n_frames, frame_len)
+            strides = (ch.strides[0] * hop, ch.strides[0])
+            frames = np.lib.stride_tricks.as_strided(ch, shape=shape, strides=strides)
+            rms = np.sqrt(np.mean(frames ** 2, axis=1))
+            rms = rms[rms > 1e-10]  # exclude silence
+            if len(rms) < 2:
+                return 0.0
+            frames_db = 20 * np.log10(rms)
+            p95 = float(np.percentile(frames_db, 95))
+            p10 = float(np.percentile(frames_db, 10))
+            return p95 - p10
 
-        rms = np.sqrt(np.mean(frames ** 2, axis=1))
-        rms = rms[rms > 1e-10]  # exclude silence
-        if len(rms) < 2:
-            return {"dr": 0.0}
+        # TT DR Meter: measure each channel, take the maximum
+        if self.data is not None and self.data.ndim > 1:
+            dr = max(_dr_single_channel(self.data[ch]) for ch in range(self.data.shape[0]))
+        else:
+            dr = _dr_single_channel(audio)
 
-        frames_db = 20 * np.log10(rms)
-        p95 = float(np.percentile(frames_db, 95))
-        p10 = float(np.percentile(frames_db, 10))
-        return {"dr": round(p95 - p10, 1)}
+        return {"dr": round(dr, 1)}
 
     # ------------------------------------------------------------------
     # Basic metrics
@@ -249,7 +261,7 @@ class _QualityMixin:
     # ------------------------------------------------------------------
     # Loudness (EBU R128)
     # ------------------------------------------------------------------
-    def _measure_loudness(self, audio: np.ndarray, sr: int, cancel_check=None) -> dict:
+    def _measure_loudness(self, audio: np.ndarray, sr: int, cancel_check=None, true_peak_val: float | None = None) -> dict:
         """EBU R128 integrated loudness, short-term, LRA, true-peak (BS.1770-4)."""
         import pyloudnorm as pyln
         if audio.ndim == 1:
@@ -262,10 +274,17 @@ class _QualityMixin:
         TARGET_SR = 12000
         if sr > TARGET_SR * 1.5:
             from scipy.signal import decimate
+            # Multi-stage cascaded decimation: factor=2 per stage
+            # Better anti-aliasing than single large factor (e.g. 16)
             factor = max(1, sr // TARGET_SR)
             meter_sr = sr // factor
-            ch0 = decimate(audio_st[:, 0].astype(np.float64), factor, zero_phase=True)
-            audio_meter = np.repeat(ch0[:, np.newaxis].astype(np.float64), 2, axis=1)
+            ch = audio_st[:, 0].astype(np.float64)
+            remaining = factor
+            while remaining > 1:
+                stage = min(remaining, 2)
+                ch = decimate(ch, stage, zero_phase=True)
+                remaining //= stage
+            audio_meter = np.repeat(ch[:, np.newaxis], 2, axis=1)
         else:
             meter_sr = sr
             audio_meter = audio_st.astype(np.float64)
@@ -293,7 +312,7 @@ class _QualityMixin:
         else:
             lra = 0.0
 
-        tp = self._true_peak(audio_st, sr)
+        tp = true_peak_val if true_peak_val is not None else self._true_peak(audio_st, sr)
 
         return {
             "integrated_lufs": round(integrated, 1),
@@ -308,13 +327,10 @@ class _QualityMixin:
         from scipy import signal as scipy_signal
 
         oversample = 4
-        peak = 0.0
-        for ch in range(audio_st.shape[1]):
-            upsampled = scipy_signal.resample_poly(
-                audio_st[:, ch].astype(np.float64), oversample, 1)
-            ch_peak = float(np.max(np.abs(upsampled)))
-            if ch_peak > peak:
-                peak = ch_peak
+        # Batch both channels in one resample_poly call (axis=0)
+        upsampled = scipy_signal.resample_poly(
+            audio_st.astype(np.float64), oversample, 1, axis=0)
+        peak = float(np.max(np.abs(upsampled)))
         if peak < 1e-12:
             return -120.0
         return round(20 * math.log10(peak), 1)

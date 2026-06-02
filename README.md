@@ -26,6 +26,7 @@
 | **Batch Analysis** — process folders, export to CSV | **批量分析** — 批量处理文件夹，导出 CSV |
 | **Screenshot Export** — save spectrogram view as PNG | **截图导出** — 保存当前频谱视图为 PNG |
 | **Fast Startup** — heavy libraries lazy-loaded in background thread | **快速启动** — 重量级库后台延迟加载，启动秒开 |
+| **Optimized Analysis** — vectorized FFT, deduped true-peak, batched spectrum computation | **优化分析** — 向量化 FFT、去重真峰值、批量频谱计算 |
 
 ## Supported Formats · 支持格式
 
@@ -53,7 +54,7 @@ All formats decoded via PyAV (libav). No external dependencies required.
 |--------|-------------|
 | **Clipping** | Flat-top detection — hard/soft clip count, longest duration |
 | **Hi-freq Cutoff** | Multi-segment median spectrum analysis — detects upsampled/low-passed sources |
-| **Dynamic Range** | Segmented RMS max-to-mean ratio |
+| **Dynamic Range** | P95–P10 of segmented frame RMS (TT DR Meter standard) |
 | **LUFS (I)** | EBU R128 integrated loudness |
 | **LUFS (S)** | Short-term loudness (3 s blocks, maximum) |
 | **LRA** | Loudness range (P10–P95 spread) |

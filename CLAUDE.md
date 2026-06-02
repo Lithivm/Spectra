@@ -79,17 +79,26 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
 
 #### 关键算法
 
-**多分辨率 STFT** — 三频段（8192/2048/512），拼接去重
+**多分辨率 STFT** — 三频段重叠拼接：低频 0–320Hz (n_fft=8192)、中频 280–3200Hz (n_fft=2048)、高频 2800Hz–Nyquist (n_fft=512)，固定 hop=512。重叠区用 `np.diff` + boolean mask 向量化去重，保留严格递增频率子集
 
-**相位重分配频谱图** — iZotope RX 风格（Auger-Flandrin），瞬时频率 + 群延迟一阶导数修正
+**相位重分配频谱图** — iZotope RX 风格（Auger-Flandrin, IEEE TASSP 1995）。三路 STFT：原始 `S`、时间导数 `S_t`（信号乘时间斜坡）、频率导数 `S_f`（窗函数乘频率斜坡）。从 `S` 的 real/imag 一次推导 `S_sq` 和 `mag`，通过 `ω_corr = Im(S_t·S*/S_sq)` 和 `τ_corr = Re(S_f·S*/S_sq)` 计算瞬时频率和群延迟修正量，`np.searchsorted` + `np.bincount` 将能量重分配到修正坐标
 
 **削波检测** — flat-top 检测，`np.diff` 边缘检测，MIN_FLAT=1（单样本峰值也报削波）。硬/软分类用二阶导数（曲率）：平坦=硬削波，弯曲=软削波
 
-**高频截止检测** — 多段中位数频谱 + 能量 shelf 检测。估计噪底（上 10% bin 中位数），从高频向低频找能量上升 >6dB 的转折点。confidence 基于信号段与噪底对比度
+**高频截止检测** — 在 1.5s 随机段（3–8 段）上做批量 FFT，映射到 128 个 log-spaced 频率箱取中位数，高斯平滑（σ=1.5）。噪底估计为高频端 10% bin 的中位数，从高频向低频扫描找能量上升 >6dB 的转折点。confidence 基于信号段与噪底对比度（>40dB → 1.0，20–40dB 线性，<20dB → 0）
 
 **动态范围** — P95-P10 帧 RMS 差值（TT DR Meter 标准），stride 视图零拷贝，帧长 4096 / hop 2048
 
 **LUFS (EBU R128)** — `pyloudnorm`，降采样保护：`sr > 12000 * 1.5` 才做 decimate
+
+#### 性能优化策略
+
+分析模块内有多处计算等价优化，不影响输出精度：
+
+- **相位重分配**：`S_sq` 和 `mag` 从 `S` 的实部/虚部一次性推导（`real² + imag²`），省去重复的 `np.abs` 调用
+- **多分辨率 STFT 频率去重**：用 `np.diff` + boolean mask 向量化替代 Python 逐元素循环
+- **高频截止检测**：多段 FFT 拼成 2D 数组，单次 `np.fft.rfft(axis=1)` 批量计算，减少 Python→C 调度开销
+- **True Peak 去重**：`analyze_quality()` 计算一次 true peak 后传入 `_measure_loudness()` 复用，避免重复的 4x 重采样
 
 ### 2.5 配色方案 — `analyzer/palette.py`
 
@@ -285,5 +294,5 @@ analyzer/core.py
 
 ---
 
-> 最后更新: 2026-06-02
+> 最后更新: 2026-06-02 (性能优化更新)
 > 基于文件: main.py, ui/main_window.py, analyzer/core.py, analyzer/_state.py, analyzer/spectrum.py, analyzer/quality.py, analyzer/load.py, analyzer/metadata.py, analyzer/batch.py, analyzer/palette.py, ui/spectrogram_widget.py, ui/metadata_panel.py, ui/waveform_widget.py, ui/playback_engine.py, ui/batch_dialog.py, ui/styles.py, ui/shaders/spectrogram.vert, ui/shaders/spectrogram.frag, lang.py, spectra.spec

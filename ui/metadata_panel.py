@@ -353,12 +353,10 @@ class MetadataPanel(QWidget):
 
             ups = qa.get("upsampling", {})
             chz = ups.get("cutoff_hz", 0)
-            nyq_hz = ups.get("nyq_hz", 0)
             if ups.get("ok"):
                 row = _AnalysisRow(True, t("高频", "Hi-freq"), t("正常", "Normal"))
             else:
-                pct = f" ({chz / nyq_hz:.0%} Nyq)" if nyq_hz > 0 else ""
-                row = _AnalysisRow(False, t("高频", "Hi-freq"), f"{chz/1000:.1f} kHz{pct}")
+                row = _AnalysisRow(False, t("高频", "Hi-freq"), f"{chz/1000:.1f} kHz")
             self._analysis_rows.append(row)
             self._content_layout.addWidget(row)
 
@@ -396,15 +394,17 @@ class MetadataPanel(QWidget):
             peak_db = qa.get("peak_db", None)
             tp_db = qa.get("true_peak_db", None)
             if peak_db is not None:
-                label = f"{peak_db:.1f} dB"
+                label = f"{peak_db:.1f} dBFS"
                 if tp_db is not None and tp_db > peak_db:
-                    label += f"  (TP {tp_db:.1f})"
+                    label += f"  (TP {tp_db:.1f} dBTP)"
                 row = _Row(t("峰值", "Peak"), label)
                 self._info_rows.append(row)
                 self._content_layout.addWidget(row)
             rms_val = qa.get("rms", None)
             if rms_val is not None:
-                row = _Row("RMS", f"{rms_val:.4f}")
+                import math
+                rms_db = 20 * math.log10(max(rms_val, 1e-10))
+                row = _Row("RMS", f"{rms_db:.1f} dBFS")
                 self._info_rows.append(row)
                 self._content_layout.addWidget(row)
         else:
@@ -486,12 +486,10 @@ class MetadataPanel(QWidget):
                 row.set_texts(t("削波", "Clipping"), detail)
         elif idx == 1:
             chz = ups.get("cutoff_hz", 0)
-            nyq_hz = ups.get("nyq_hz", 0)
             if ups.get("ok"):
                 row.set_texts(t("高频", "Hi-freq"), t("正常", "Normal"))
             else:
-                pct = f" ({chz / nyq_hz:.0%} Nyq)" if nyq_hz > 0 else ""
-                row.set_texts(t("高频", "Hi-freq"), f"{chz/1000:.1f} kHz{pct}")
+                row.set_texts(t("高频", "Hi-freq"), f"{chz/1000:.1f} kHz")
         elif idx == 2:
             dr_val = dr.get("dr", 0)
             if dr_val > 14:
