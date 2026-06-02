@@ -704,11 +704,22 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
     # ── OpenGL lifecycle ────────────────────────────────────────────
 
-    def _cleanup_gl(self) -> None:
-        """Release GL resources. Must be called with a current context."""
+    def _cleanup_gl(self, *, need_context: bool = True) -> None:
+        """Release GL resources.
+
+        Args:
+            need_context: If True, call makeCurrent/doneCurrent around the
+                cleanup.  Set to False when called from initializeGL() where
+                Qt already provides a current context.
+        """
+        has_any = (self._tex_id is not None or self._lut_tex_id is not None
+                   or self._gl_program is not None or self._vao is not None)
+        if not has_any:
+            return
         if not self.isValid():
             return
-        self.makeCurrent()
+        if need_context:
+            self.makeCurrent()
         try:
             if self._tex_id is not None:
                 glDeleteTextures([self._tex_id])
@@ -724,11 +735,12 @@ class SpectrogramGLWidget(QOpenGLWidget):
                 glDeleteVertexArrays(1, [self._vao])
                 self._vao = None
         finally:
-            self.doneCurrent()
+            if need_context:
+                self.doneCurrent()
 
     def initializeGL(self) -> None:
         # Clean up old resources if context was recreated
-        self._cleanup_gl()
+        self._cleanup_gl(need_context=False)
         glClearColor(0, 0, 0, 1)
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
 
