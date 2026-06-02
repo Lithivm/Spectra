@@ -543,6 +543,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
         # ── Cursor hover ──────────────────────────────────────────
         self._cursor_x: int = -1  # pixel x, -1 = hidden
+        self._mouse_inside: bool = False
 
         # ── View window (zoom) ────────────────────────────────────
         self._view_t0 = 0.0   # fraction of duration
@@ -900,6 +901,19 @@ class SpectrogramGLWidget(QOpenGLWidget):
         ratio = (t_frac - self._view_t0) / view_range
         return int(ratio * self.width())
 
+    def update_playback_cursor(self, time_s: float) -> None:
+        """Update cursor line to follow playback position.
+
+        Called from main_window's playback tick.  Only acts when the mouse
+        is *not* inside the spectrogram so it never overrides hover tracking.
+        """
+        if self._mouse_inside or self.duration <= 0:
+            return
+        px = self._time_to_px(time_s)
+        if 0 <= px <= self.width():
+            self._cursor_x = px
+            self.update()
+
     def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)
 
@@ -916,7 +930,12 @@ class SpectrogramGLWidget(QOpenGLWidget):
             self.update()
         super().mouseMoveEvent(event)
 
+    def enterEvent(self, event) -> None:
+        self._mouse_inside = True
+        super().enterEvent(event)
+
     def leaveEvent(self, event) -> None:
+        self._mouse_inside = False
         self._cursor_x = -1
         self.update()
         self.cursor_left.emit()

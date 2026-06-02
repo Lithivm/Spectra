@@ -980,6 +980,8 @@ class MainWindow(QMainWindow):
         dur = self._analyzer.duration if self._analyzer else 0
         if dur > 0:
             self._progress_slider.setValue(int(pos / dur * 1000))
+            # 同步声谱光标到播放位置（鼠标不在声谱区时）
+            self._spec.update_playback_cursor(pos)
 
     def _on_playback_toggle(self) -> None:
         self._playback.toggle()
@@ -992,6 +994,12 @@ class MainWindow(QMainWindow):
             self._play_btn.setText("▶")
             if actual == "stopped":
                 self._progress_slider.setValue(0)
+            # 停止/暂停时，若鼠标不在声谱区，清除光标
+            if not self._spec._mouse_inside:
+                self._spec._cursor_x = -1
+                self._spec.update()
+                self._cursor_label.hide()
+                self._filename_widget.show()
 
     def _on_slider_pressed(self) -> None:
         self._slider_dragging = True
@@ -1050,8 +1058,9 @@ class MainWindow(QMainWindow):
     @safe_slot
     def _on_cursor_left(self) -> None:
         """Restore filename when cursor leaves spectrogram."""
-        self._cursor_label.hide()
-        self._filename_widget.show()
+        if not self._playback.is_playing:
+            self._cursor_label.hide()
+            self._filename_widget.show()
 
     @safe_slot
     def _on_quality_done(self, qa: Any) -> None:
