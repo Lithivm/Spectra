@@ -37,41 +37,71 @@ class _QualityMixin:
     # Clipping detection
     # ------------------------------------------------------------------
     def _detect_clipping(self, audio: np.ndarray, sr: int) -> dict:
-        """Flat-top + intersample-peak clipping detection."""
+        """Flat-top clipping detection with hard/soft classification.
+
+        Detection:
+          - Any sample >= 0.999 is a candidate clip.
+          - Consecutive candidates form a clip region.
+          - Regions of length >= 2 are "flat-top" clips.
+          - Single-sample peaks >= 0.999 are also reported as clips.
+
+        Hard vs soft classification (for regions >= 3):
+          - Hard clip: signal is at the ceiling and flat (2nd derivative ≈ 0).
+          - Soft clip: signal is at the ceiling but curved (2nd derivative ≠ 0),
+            e.g. tube/tape saturation.
+        """
+        CLIP_THRESH = 0.999
         eps = np.finfo(np.float32).eps * 10
-        MIN_FLAT = 3
-        abs_audio = np.abs(audio)
-        over = abs_audio >= 0.999
 
-        diff = np.abs(np.diff(audio))
-        flat_mask = (diff < eps) & over[:-1] & over[1:]
-
-        padded = np.pad(flat_mask, (1, 1), constant_values=False)
-        edges = np.diff(padded.astype(np.int8))
-        starts = np.where(edges == 1)[0]
-        ends = np.where(edges == -1)[0] - 1
-        long_enough = (ends - starts + 1) >= MIN_FLAT
-        flat_starts = starts[long_enough].tolist()
-        flat_ends = ends[long_enough].tolist()
-
-        if not flat_starts:
+        over = np.abs(audio) >= CLIP_THRESH
+        if not np.any(over):
             return {"ok": True, "count": 0, "longest_ms": 0, "method": "flat-top"}
 
-        durations_ms = [int((e - s + 1) / sr * 1000) for s, e in zip(flat_starts, flat_ends)]
-        longest_ms = max(durations_ms)
+        # Find contiguous runs of over-threshold samples
+        padded = np.empty(len(over) + 2, dtype=np.int8)
+        padded[0] = 0
+        padded[-1] = 0
+        padded[1:-1] = over.astype(np.int8)
+        edges = np.diff(padded)
+        starts = np.where(edges == 1)[0]
+        ends = np.where(edges == -1)[0] - 1
+        lengths = ends - starts + 1
 
+        # Filter: keep regions >= 1 sample (single peaks are valid clips)
+        keep = lengths >= 1
+        clip_starts = starts[keep]
+        clip_ends = ends[keep]
+
+        if len(clip_starts) == 0:
+            return {"ok": True, "count": 0, "longest_ms": 0, "method": "flat-top"}
+
+        durations_ms = ((clip_ends - clip_starts + 1) / sr * 1000).astype(int)
+        longest_ms = int(durations_ms.max())
+
+        # Hard vs soft classification using second derivative (curvature)
+        # Hard clip: flat top → 2nd derivative ≈ 0
+        # Soft clip: curved top → 2nd derivative ≠ 0
         hard_count = 0
-        for s, e in zip(flat_starts, flat_ends):
-            region = audio[s:e+1]
-            if np.max(np.abs(np.diff(region))) < eps * 2:
-                hard_count += 1
+        for s, e in zip(clip_starts, clip_ends):
+            region_len = e - s + 1
+            if region_len >= 3:
+                # Use second derivative of the clip region
+                region = audio[s:e + 1]
+                d2 = np.abs(np.diff(region, n=2))
+                if np.max(d2) < eps * 10:
+                    hard_count += 1
+            elif region_len == 2:
+                # Two samples: check if they're at the same level
+                if abs(audio[s] - audio[e]) < eps:
+                    hard_count += 1
+            # Single sample: can't distinguish, count as soft
 
         return {
             "ok": False,
-            "count": len(flat_starts),
+            "count": len(clip_starts),
             "longest_ms": longest_ms,
             "hard_clips": hard_count,
-            "soft_clips": len(flat_starts) - hard_count,
+            "soft_clips": len(clip_starts) - hard_count,
             "method": "flat-top",
         }
 
@@ -79,7 +109,16 @@ class _QualityMixin:
     # High-frequency cutoff detection
     # ------------------------------------------------------------------
     def _detect_high_freq_cutoff(self, audio: np.ndarray, sr: int) -> dict:
-        """Multi-segment median-spectrum cutoff detection."""
+        """Detect spectral cutoff from upsampling or low-pass filtering.
+
+        Algorithm:
+          1. Compute median power spectrum across multiple random segments.
+          2. Bin into 128 log-spaced frequency bins, convert to dB.
+          3. Estimate the noise floor from the top 10% of bins.
+          4. Walk from high→low frequency to find where the spectrum rises
+             above the noise floor by >6 dB — that's the cutoff point.
+          5. Confidence = contrast between the signal band and the noise shelf.
+        """
         import scipy.ndimage as ndi
 
         nyq = sr / 2
@@ -88,31 +127,29 @@ class _QualityMixin:
         n_segs = min(8, max(3, len(audio) // seg_len))
 
         if n_segs <= 1 or len(audio) < seg_len:
-            segments = [audio]
+            seg_starts = np.array([0])
         else:
             max_start = len(audio) - seg_len
             rng = np.random.default_rng(42)
-            starts = sorted(rng.integers(0, max(1, max_start), size=n_segs))
-            segments = [audio[s:s + seg_len] for s in starts]
+            seg_starts = np.sort(rng.integers(0, max(1, max_start), size=n_segs))
 
-        spectra = []
-        for seg in segments:
-            S = np.abs(np.fft.rfft(seg * np.hanning(len(seg)))) ** 2
-            spectra.append(S)
+        window = np.hanning(seg_len).astype(np.float32)
+        n_rfft = seg_len // 2 + 1
+        all_specs = np.empty((len(seg_starts), n_rfft), dtype=np.float64)
+        for i, s in enumerate(seg_starts):
+            seg = audio[s:s + seg_len]
+            all_specs[i] = np.abs(np.fft.rfft(seg * window)) ** 2
 
-        min_len = min(len(s) for s in spectra)
-        spectra = [s[:min_len] for s in spectra]
-
-        med_spec = np.median(np.array(spectra), axis=0)
-        freqs = np.fft.rfftfreq(len(segments[0]), 1.0 / sr)[:min_len]
+        med_spec = np.median(all_specs, axis=0)
+        freqs = np.fft.rfftfreq(seg_len, 1.0 / sr)
 
         if np.max(med_spec) < 1e-12:
             return {"ok": True, "cutoff_hz": nyq, "confidence": 0.0, "method": "multi-seg median"}
 
+        # Log-spaced binning
         f_min = max(freqs[0], 100.0)
-        f_max = nyq
         n_bins = 128
-        log_edges = np.logspace(np.log10(f_min), np.log10(f_max), n_bins + 1)
+        log_edges = np.logspace(np.log10(f_min), np.log10(nyq), n_bins + 1)
         log_centers = np.sqrt(log_edges[:-1] * log_edges[1:])
 
         binned_energy = np.zeros(n_bins)
@@ -125,53 +162,76 @@ class _QualityMixin:
         binned_db = 10 * np.log10(binned_energy + 1e-12)
         binned_db = ndi.gaussian_filter1d(binned_db, sigma=1.5)
 
-        hi_start = n_bins // 2
-        hi_db = binned_db[hi_start:]
-        hi_freqs = log_centers[hi_start:]
+        # ── Noise floor estimation ──
+        # The top 10% of bins (highest frequencies) represent the noise shelf
+        # if a cutoff exists, or natural rolloff if not.
+        shelf_start = int(n_bins * 0.9)
+        noise_floor_db = float(np.median(binned_db[shelf_start:]))
 
-        slope = np.diff(hi_db)
-        slope = np.append(slope, slope[-1])
-
-        slope_mean = np.mean(slope)
-        slope_std = np.std(slope)
-
-        steep_drop = slope < (slope_mean - 2.5 * slope_std)
-
+        # ── Find cutoff: walk high→low, find where spectrum rises above floor ──
+        SHELF_THRESHOLD_DB = 6.0  # signal must be >6 dB above noise floor
         cutoff_hz = nyq
-        if np.any(steep_drop):
-            drop_idx = int(np.argmax(steep_drop))
-            cutoff_hz = float(hi_freqs[drop_idx])
+        signal_peak_db = float(np.max(binned_db[:shelf_start]))
 
-        hi_energy = binned_energy[hi_start:]
-        if np.mean(hi_energy) > 1e-12:
-            energy_cv = float(np.std(hi_energy) / np.mean(hi_energy))
-            cutoff_confidence = max(0.0, min(1.0, 1.0 - energy_cv * 2.0))
+        # Walk from top down to find the transition point
+        for i in range(n_bins - 1, -1, -1):
+            if binned_db[i] > noise_floor_db + SHELF_THRESHOLD_DB:
+                # This bin is above the shelf — cutoff is between i and i+1
+                if i < n_bins - 1:
+                    cutoff_hz = float(log_centers[i + 1])
+                else:
+                    cutoff_hz = nyq
+                break
+
+        # ── Confidence: based on contrast between signal and shelf ──
+        contrast_db = signal_peak_db - noise_floor_db
+        if contrast_db > 40:
+            confidence = 1.0
+        elif contrast_db > 20:
+            confidence = (contrast_db - 20) / 20
         else:
-            cutoff_confidence = 1.0
+            confidence = 0.0
 
-        cutoff_significant = cutoff_hz < nyq * 0.9
-        cutoff_confident = cutoff_confidence > 0.3
+        # ── Decision ──
+        cutoff_significant = cutoff_hz < nyq * 0.85
+        cutoff_confident = confidence > 0.3
         is_cutoff = cutoff_significant and cutoff_confident
 
         return {
             "ok": not is_cutoff,
-            "cutoff_hz": cutoff_hz,
+            "cutoff_hz": round(cutoff_hz),
             "nyq_hz": nyq,
-            "method": "multi-seg median + slope",
+            "method": "shelf detection",
         }
 
     # ------------------------------------------------------------------
     # Dynamic range
     # ------------------------------------------------------------------
     def _measure_dynamic_range(self, audio: np.ndarray) -> dict:
-        import librosa
-        rms = librosa.feature.rms(y=audio, frame_length=2048, hop_length=512, center=False)[0]
-        frames_db = 20 * np.log10(rms[rms > 0])
-        if len(frames_db) == 0:
+        """Dynamic range: P95 - P10 of frame RMS levels (dB).
+
+        Uses ~100ms frames (4096 samples @ 44.1kHz) with 50% hop.
+        Matches the DR meter convention used by TT DR Meter and similar tools.
+        """
+        frame_len = 4096
+        hop = frame_len // 2
+        n = len(audio)
+        n_frames = max(1, (n - frame_len) // hop + 1)
+
+        # Stride-based framing — zero copy
+        shape = (n_frames, frame_len)
+        strides = (audio.strides[0] * hop, audio.strides[0])
+        frames = np.lib.stride_tricks.as_strided(audio, shape=shape, strides=strides)
+
+        rms = np.sqrt(np.mean(frames ** 2, axis=1))
+        rms = rms[rms > 1e-10]  # exclude silence
+        if len(rms) < 2:
             return {"dr": 0.0}
-        top = float(np.max(frames_db))
-        bottom = float(np.mean(frames_db))
-        return {"dr": round(top - bottom, 1)}
+
+        frames_db = 20 * np.log10(rms)
+        p95 = float(np.percentile(frames_db, 95))
+        p10 = float(np.percentile(frames_db, 10))
+        return {"dr": round(p95 - p10, 1)}
 
     # ------------------------------------------------------------------
     # Basic metrics
