@@ -143,9 +143,10 @@ class PlaybackEngine(QObject):
                 samplerate=self._sample_rate,
                 channels=self._audio.shape[0],
                 dtype='float32',
-                blocksize=0,              # let PortAudio choose optimal size
+                blocksize=0,
                 callback=self._callback,
                 finished_callback=self._on_stream_finished,
+                **self._wasapi_kwargs(),
             )
             self._stream.start()
             self._stream_start_dac = self._stream.time
@@ -154,6 +155,22 @@ class PlaybackEngine(QObject):
             logger.exception("Failed to start audio stream")
             self._close_stream()
             self._set_state("stopped")
+
+    @staticmethod
+    def _wasapi_kwargs() -> dict:
+        """Return kwargs for WASAPI shared-mode output, or {} to use default."""
+        try:
+            for api in sd.query_hostapis():
+                if api["name"] == "Windows WASAPI":
+                    dev_idx = api["default_output_device"]
+                    if dev_idx >= 0:
+                        return {
+                            "device": dev_idx,
+                            "extra_settings": sd.WasapiSettings(exclusive=False),
+                        }
+        except Exception:
+            pass
+        return {}
 
     def _close_stream(self) -> None:
         if self._stream is not None:
