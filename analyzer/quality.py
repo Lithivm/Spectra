@@ -137,7 +137,6 @@ class _QualityMixin:
             seg_starts = np.sort(rng.integers(0, max(1, max_start), size=n_segs))
 
         window = np.hanning(seg_len).astype(np.float32)
-        n_rfft = seg_len // 2 + 1
         # Batch all segments into a 2D array for a single FFT call
         segments = np.empty((len(seg_starts), seg_len), dtype=np.float32)
         for i, s in enumerate(seg_starts):

@@ -66,13 +66,6 @@ def _decode_with_av(filepath: Path) -> tuple[np.ndarray, int] | None:
             stream = audio_streams[0]
             sr = stream.sample_rate
 
-            # 尝试从流元数据预估总采样数，减少内存重分配
-            est_total = 0
-            if stream.duration and stream.time_base:
-                est_total = int(stream.duration * stream.time_base * sr)
-            elif stream.frames > 0:
-                est_total = stream.frames
-
             chunks: list[np.ndarray] = []
             total_samples = 0
             n_channels = 0
