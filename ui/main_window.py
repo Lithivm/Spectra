@@ -103,11 +103,6 @@ QPushButton:hover {{
 QPushButton:pressed {{
     background-color: rgba(124, 106, 247, 0.15);
 }}
-QPushButton:checked {{
-    background-color: rgba(124, 106, 247, 0.15);
-    border-color: {ACCENT};
-    color: {TEXT_PRI};
-}}
 QPushButton#primary {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
         stop:0 {ACCENT}, stop:1 {ACCENT_ALT});
@@ -481,7 +476,6 @@ class MainWindow(QMainWindow):
         self._x_axis: _XAxisWidget | None = None
         self._colorbar: _ColorBarWidget | None = None
         self._meta: MetadataPanel | None = None
-        self._meta_toggle_btn: QPushButton | None = None
         self._analyzer: AudioAnalyzer | None = None
         self._current_palette = "inferno"
         self._fft_size = 8192
@@ -749,20 +743,6 @@ class MainWindow(QMainWindow):
         self._save_btn.setFixedHeight(30)
         self._save_btn.clicked.connect(self._on_save_screenshot)
         layout.addWidget(self._save_btn)
-
-        sep5 = QLabel("│")
-        sep5.setStyleSheet(f"color: {TEXT_DIM}; background: transparent; border: none;")
-        sep5.setFixedHeight(20)
-        layout.addWidget(sep5)
-
-        # metadata panel toggle
-        self._meta_toggle_btn = QPushButton(t("信息", "Info"))
-        self._meta_toggle_btn.setCheckable(True)
-        self._meta_toggle_btn.setChecked(True)
-        self._meta_toggle_btn.setFixedHeight(30)
-        self._meta_toggle_btn.setMinimumWidth(50)
-        self._meta_toggle_btn.clicked.connect(self._toggle_meta)
-        layout.addWidget(self._meta_toggle_btn)
 
         # language toggle
         self._lang_btn = QPushButton("中/EN")
@@ -1189,10 +1169,6 @@ class MainWindow(QMainWindow):
         from lang import LANG
         self._lang_btn.setText("EN" if LANG == "zh" else "中")
 
-    def _toggle_meta(self) -> None:
-        visible = self._meta_toggle_btn.isChecked()
-        self._meta.setVisible(visible)
-
     def _retranslate(self, _lang: str | None = None) -> None:
         self._brand_label.setText("Spectra")
         self._open_btn.setText(t("打开文件", "Open File"))
@@ -1201,7 +1177,6 @@ class MainWindow(QMainWindow):
         self._mode_label.setText(t("模式", "Mode"))
         self._yscale_label.setText(t("刻度", "Scale"))
         self._play_label.setText(t("播放", "Play"))
-        self._meta_toggle_btn.setText(t("信息", "Info"))
         self._zoom_hint.setText(
             t("滚轮: 缩放时间  Shift+滚轮: 缩放频率  双击: 重置",
               "Wheel: zoom time  Shift+Wheel: zoom freq  Dbl-click: reset"))
