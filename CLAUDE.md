@@ -42,7 +42,7 @@
 
 | 模块 | 职责 |
 |------|------|
-| `analyzer/_state.py` | FFTW wisdom 管理、STFT 缓存 (LRU maxsize=8)、`_max_reduce_with_carry` |
+| `analyzer/_state.py` | FFTW wisdom 管理、STFT 缓存 (LRU maxsize=8, key 含 hop_length)、`_max_reduce_with_carry` |
 | `analyzer/spectrum.py` | `_SpectrumMixin` — STFT、多分辨率、相位重分配、mel、MFCC、流式渲染 |
 | `analyzer/quality.py` | `_QualityMixin` — 削波、过采样检测、DR、LUFS、true peak |
 | `analyzer/core.py` | `AudioAnalyzer` 门面类，继承两个 mixin，保留 load/waveform/info |
@@ -57,7 +57,7 @@
 
 **关键设计决策**
 - 所有格式统一输出 `(numpy.ndarray, sample_rate)` 形式，shape 为 `(channels, samples)`
-- 整数格式用 `frame.format.bits` 做通用归一化，覆盖 s16/s24/s32/s64 等所有位深
+- 整数格式用 `frame.format.bits` 做通用归一化，覆盖 s16/s24/s32/s64 等所有位深（`max(1, bits)` 防除零）
 - ffmpeg 回退固定输出 `48kHz, 立体声`，避免硬依赖
 
 ### 2.3 元数据解析 — `analyzer/metadata.py`
@@ -89,7 +89,7 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
 
 **动态范围** — P95-P10 帧 RMS 差值（TT DR Meter 标准），stride 视图零拷贝，帧长 4096 / hop 2048
 
-**LUFS (EBU R128)** — `pyloudnorm`，降采样保护：`sr > 12000 * 1.5` 才做 decimate
+**LUFS (EBU R128)** — `pyloudnorm`，降采样保护：`sr > 12000 * 1.5` 才做 decimate。LRA 使用 `np.percentile` 精确插值（线性），避免短时段列表上的最近邻索引误差
 
 #### 性能优化策略
 
@@ -117,6 +117,7 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
 - **光标信息**：`setMouseTracking(True)`，`mouseMoveEvent` 发射 `cursor_info(time, freq, dB, px)` 信号
 - **滚轮缩放**：`wheelEvent` 以光标位置为中心缩放时间轴，Shift+滚轮缩放频率轴，双击重置
 - **光标竖线**：hover 时跟随鼠标；播放中鼠标离开声谱区时跟随播放进度；鼠标回到声谱区立即切回跟随鼠标
+- **HiDPI 支持**：`resizeGL` 使用 `devicePixelRatio` 设置物理像素 viewport，与 `paintGL` 的纹理尺寸一致，避免高 DPI 显示器上渲染错位
 - **GL 资源管理**：`_cleanup_gl(need_context)` 释放纹理/program/VAO，`initializeGL` 传 `need_context=False`（Qt 已持有上下文），`closeEvent` 传 `True`
 - **LUT 缓存**：`build_lut` / `build_lut_np` 按配色名缓存结果，避免重复计算
 
@@ -294,5 +295,5 @@ analyzer/core.py
 
 ---
 
-> 最后更新: 2026-06-02 (性能优化更新)
+> 最后更新: 2026-06-08 (准确性修复 + HiDPI 支持)
 > 基于文件: main.py, ui/main_window.py, analyzer/core.py, analyzer/_state.py, analyzer/spectrum.py, analyzer/quality.py, analyzer/load.py, analyzer/metadata.py, analyzer/batch.py, analyzer/palette.py, ui/spectrogram_widget.py, ui/metadata_panel.py, ui/waveform_widget.py, ui/playback_engine.py, ui/batch_dialog.py, ui/styles.py, ui/shaders/spectrogram.vert, ui/shaders/spectrogram.frag, lang.py, spectra.spec
