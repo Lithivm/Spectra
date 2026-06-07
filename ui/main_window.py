@@ -520,7 +520,7 @@ class MainWindow(QMainWindow):
         wave_card = _card(radius=10)
         wave_card.setFixedHeight(130)
         wl = QVBoxLayout(wave_card)
-        wl.setContentsMargins(36, 0, 36, 0)
+        wl.setContentsMargins(8, 0, 8, 0)
         self._wave = WaveformWidget()
         wl.addWidget(self._wave)
         left_layout.addWidget(wave_card)
@@ -538,10 +538,10 @@ class MainWindow(QMainWindow):
 
         SIDE = 36
 
-        _grid.setColumnMinimumWidth(0, SIDE)
+        _grid.setColumnMinimumWidth(0, 0)
         _grid.setColumnStretch(0, 0)
         _grid.setColumnStretch(1, 1)
-        _grid.setColumnMinimumWidth(2, 36)
+        _grid.setColumnMinimumWidth(2, 0)
         _grid.setColumnStretch(2, 0)
 
         _grid.setRowMinimumHeight(0, SIDE)
@@ -561,7 +561,7 @@ class MainWindow(QMainWindow):
 
         # Row 1
         self._y_axis = _YAxisWidget()
-        self._y_axis.setFixedWidth(SIDE)
+        self._y_axis.setMaximumWidth(SIDE)
         _grid.addWidget(self._y_axis, 1, 0)
 
         self._spec = SpectrogramGLWidget()
@@ -569,7 +569,7 @@ class MainWindow(QMainWindow):
         _grid.addWidget(self._spec, 1, 1)
 
         self._colorbar = _ColorBarWidget()
-        self._colorbar.setFixedWidth(36)
+        self._colorbar.setMaximumWidth(36)
         self._colorbar.set_data(self._spec._lut_np)
         _grid.addWidget(self._colorbar, 1, 2)
 
@@ -586,7 +586,8 @@ class MainWindow(QMainWindow):
 
         # 右侧元数据面板
         self._meta = MetadataPanel()
-        self._meta.setFixedWidth(310)
+        self._meta.setMinimumWidth(180)
+        self._meta.setMaximumWidth(310)
         root_layout.addWidget(self._meta)
 
         self._spec.set_palette("inferno")
@@ -645,7 +646,6 @@ class MainWindow(QMainWindow):
         self._open_btn = QPushButton(t("打开文件", "Open File"))
         self._open_btn.setObjectName("primary")
         self._open_btn.setFixedHeight(32)
-        self._open_btn.setFixedWidth(100)
         self._open_btn.clicked.connect(self._on_open_file)
         layout.addWidget(self._open_btn)
 
@@ -656,7 +656,7 @@ class MainWindow(QMainWindow):
 
         # Play / Pause
         self._play_btn = QPushButton("▶")
-        self._play_btn.setFixedSize(36, 30)
+        self._play_btn.setFixedHeight(30)
         self._play_btn.setToolTip(t("播放/暂停", "Play / Pause"))
         self._play_btn.setStyleSheet(f"""
             QPushButton {{
@@ -696,7 +696,6 @@ class MainWindow(QMainWindow):
         self._mode_combo.addItems(["standard", "multi", "reassign"])
         self._mode_combo.setCurrentText("standard")
         self._mode_combo.setFixedHeight(30)
-        self._mode_combo.setFixedWidth(88)
         self._mode_combo.currentTextChanged.connect(self._on_mode_changed)
         layout.addWidget(self._mode_combo)
 
@@ -729,7 +728,6 @@ class MainWindow(QMainWindow):
         self._fft_combo.addItems(["256", "512", "1024", "2048", "4096", "8192", "16384"])
         self._fft_combo.setCurrentText("8192")
         self._fft_combo.setFixedHeight(30)
-        self._fft_combo.setFixedWidth(72)
         self._fft_combo.currentTextChanged.connect(self._on_fft_size_changed)
         layout.addWidget(self._fft_combo)
 
