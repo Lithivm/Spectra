@@ -1031,7 +1031,8 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._reposition_progress_label()
 
     def resizeGL(self, w: int, h: int) -> None:
-        glViewport(0, 0, w, h)
+        ratio = self.devicePixelRatio()
+        glViewport(0, 0, int(w * ratio), int(h * ratio))
 
     def paintGL(self) -> None:
         w = int(self.width() * self.devicePixelRatio())

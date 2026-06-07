@@ -304,10 +304,9 @@ class _QualityMixin:
         short_term = max(st_vals) if st_vals else integrated
 
         if len(st_vals) >= 3:
-            sv = sorted(st_vals)
-            p10 = sv[int(len(sv) * 0.1)]
-            p95 = sv[int(len(sv) * 0.95)]
-            lra = round(p95 - p10, 1)
+            sv = np.array(sorted(st_vals))
+            p10, p95 = np.percentile(sv, [10, 95])
+            lra = round(float(p95 - p10), 1)
         else:
             lra = 0.0
 

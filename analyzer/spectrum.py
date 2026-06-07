@@ -67,7 +67,7 @@ class _SpectrumMixin:
         import librosa
         _ensure_wisdom()
         if self.filepath and self.filepath.exists():
-            cache_key = (str(self.filepath), mode, n_fft)
+            cache_key = (str(self.filepath), mode, n_fft, hop_length)
             with _stft_lock:
                 if cache_key in _stft_cache:
                     return _stft_cache[cache_key]
@@ -104,7 +104,7 @@ class _SpectrumMixin:
 
         if self.filepath:
             with _stft_lock:
-                _stft_cache[(str(self.filepath), mode, n_fft)] = result
+                _stft_cache[(str(self.filepath), mode, n_fft, hop_length)] = result
                 while len(_stft_cache) > _MAX_STFT_CACHE:
                     _stft_cache.popitem(last=False)
 

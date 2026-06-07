@@ -76,7 +76,8 @@ def _decode_with_av(filepath: Path) -> tuple[np.ndarray, int] | None:
                     arr = arr.astype(np.float32)
                     fmt_name = frame.format.name
                     if not fmt_name.startswith(('flt', 'dbl')):
-                        arr /= float(1 << (frame.format.bits - 1))
+                        bits = max(1, frame.format.bits)
+                        arr /= float(1 << (bits - 1))
 
                 # 从首帧确定通道数
                 if n_channels == 0:
