@@ -137,7 +137,12 @@
       "Bash(ruff check *)",
       "PowerShell(python -c \"import ast; ast.parse\\(open\\('analyzer/quality.py', encoding='utf-8'\\).read\\(\\)\\); print\\('quality.py: OK'\\)\")",
       "Bash(rm -f \"D:/Claude code/Spectra/dist/Spectra.zip\")",
-      "Bash(zip -r Spectra.zip Spectra/)"
+      "Bash(zip -r Spectra.zip Spectra/)",
+      "PowerShell(& \"C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" -c \"import ast; ast.parse\\(open\\('D:/Claude code/Spectra/analyzer/quality.py', encoding='utf-8'\\).read\\(\\)\\); print\\('quality.py: OK'\\)\" 2>&1)",
+      "PowerShell(& \"C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" -c \"import ast; ast.parse\\(open\\('D:/Claude code/Spectra/analyzer/spectrum.py', encoding='utf-8'\\).read\\(\\)\\); print\\('spectrum.py: OK'\\)\" 2>&1)",
+      "PowerShell(& \"C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" -c \"import ast; ast.parse\\(open\\('D:/Claude code/Spectra/analyzer/load.py', encoding='utf-8'\\).read\\(\\)\\); print\\('load.py: OK'\\)\" 2>&1)",
+      "PowerShell(& \"C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" -c \"import ast; ast.parse\\(open\\('D:/Claude code/Spectra/ui/spectrogram_widget.py', encoding='utf-8'\\).read\\(\\)\\); print\\('spectrogram_widget.py: OK'\\)\" 2>&1)",
+      "PowerShell(& \"C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" -c \"import ast; ast.parse\\(open\\('D:/Claude code/Spectra/ui/main_window.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main_window.py: OK'\\)\" 2>&1)"
     ]
   }
 }
