@@ -914,6 +914,17 @@ class SpectrogramGLWidget(QOpenGLWidget):
             self._cursor_x = px
             self.update()
 
+    def stop_playback_cursor(self) -> bool:
+        """Hide the cursor line if the mouse is not inside the spectrogram.
+
+        Returns True if the cursor was hidden (caller should update UI accordingly).
+        """
+        if not self._mouse_inside:
+            self._cursor_x = -1
+            self.update()
+            return True
+        return False
+
     def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)
 

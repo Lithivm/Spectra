@@ -1011,9 +1011,7 @@ class MainWindow(QMainWindow):
             if actual == "stopped":
                 self._progress_slider.setValue(0)
             # 停止/暂停时，若鼠标不在声谱区，清除光标
-            if not self._spec._mouse_inside:
-                self._spec._cursor_x = -1
-                self._spec.update()
+            if self._spec.stop_playback_cursor():
                 self._cursor_label.hide()
                 self._filename_widget.show()
 

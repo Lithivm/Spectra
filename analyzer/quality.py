@@ -42,8 +42,7 @@ class _QualityMixin:
         Detection:
           - Any sample >= 0.999 is a candidate clip.
           - Consecutive candidates form a clip region.
-          - Regions of length >= 2 are "flat-top" clips.
-          - Single-sample peaks >= 0.999 are also reported as clips.
+          - Regions of length >= 2 are reported as clipping events.
 
         Hard vs soft classification (for regions >= 3):
           - Hard clip: signal is at the ceiling and flat (2nd derivative ≈ 0).
@@ -67,21 +66,21 @@ class _QualityMixin:
         ends = np.where(edges == -1)[0] - 1
         lengths = ends - starts + 1
 
-        # Filter: keep regions >= 1 sample (single peaks are valid clips)
-        keep = lengths >= 1
+        # Filter: keep regions >= 2 consecutive samples (flat-top clips)
+        keep = lengths >= 2
         clip_starts = starts[keep]
         clip_ends = ends[keep]
+        lengths = lengths[keep]
 
         if len(clip_starts) == 0:
             return {"ok": True, "count": 0, "longest_ms": 0, "method": "flat-top"}
 
-        durations_ms = ((clip_ends - clip_starts + 1) / sr * 1000).astype(int)
+        durations_ms = (lengths / sr * 1000).astype(int)
         longest_ms = int(durations_ms.max())
 
         # Hard vs soft classification using second derivative (curvature)
         # Hard clip: flat top → 2nd derivative ≈ 0
         # Soft clip: curved top → 2nd derivative ≠ 0
-        lengths = clip_ends - clip_starts + 1
         hard_count = 0
 
         # length == 2: check if both samples are at the same level (vectorized)
@@ -205,6 +204,7 @@ class _QualityMixin:
             "ok": not is_cutoff,
             "cutoff_hz": round(cutoff_hz),
             "nyq_hz": nyq,
+            "confidence": round(confidence, 2),
             "method": "shelf detection",
         }
 
@@ -273,16 +273,10 @@ class _QualityMixin:
         TARGET_SR = 12000
         if sr > TARGET_SR * 1.5:
             from scipy.signal import decimate
-            # Multi-stage cascaded decimation: factor=2 per stage
-            # Better anti-aliasing than single large factor (e.g. 16)
             factor = max(1, sr // TARGET_SR)
             meter_sr = sr // factor
             ch = audio_st[:, 0].astype(np.float64)
-            remaining = factor
-            while remaining > 1:
-                stage = min(remaining, 2)
-                ch = decimate(ch, stage, zero_phase=True)
-                remaining //= stage
+            ch = decimate(ch, factor, zero_phase=True)
             audio_meter = np.repeat(ch[:, np.newaxis], 2, axis=1)
         else:
             meter_sr = sr
