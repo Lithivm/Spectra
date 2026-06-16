@@ -119,16 +119,16 @@ fragColor = texture(u_colormap, vec2(t, 0.5));
 - `build_lut_np(palette_name)` — 返回 shape=(256, 4) uint8 RGBA LUT
 - `is_spectra(palette_name)` — 判断是否使用自定义亮度曲线
 - `get_curve_params(palette_name)` — 返回 `{"power", "lo", "span"}` dict
-- 标准配色通过 `matplotlib.cm.get_cmap` 导出，spectra 通过 `_rgb_lerp` 插值
+- 所有配色通过 `_build_lut_from_stops` 从硬编码色标（`_STOPS_TABLE`）线性插值，零外部依赖
 - dB 范围：-120 到 0 dB
 
 #### 调参方式
 只改 `palette.py` 中的 `SPECTRA_CURVE`，不涉及任何其他文件。
 
 #### 标准配色保真度
-- 标准配色 LUT 通过 `matplotlib.cm.get_cmap(name, 256)` 直接导出，RGB 三通道与 matplotlib 原版完全一致
+- 标准配色 LUT 从 `_STOPS_TABLE` 中的硬编码色标线性插值生成（色标采样自 matplotlib 原版关键点）
 - LUT alpha 统一为 255（shader 无 blending，alpha 通道不参与渲染，仅占位）
-- 不应为标准配色添加任何手写 stops、gamma 或亮度修正，显示效果由 matplotlib 原版决定
+- 零外部依赖，打包时无需包含 matplotlib
 
 ### 2.6 渲染器 — `ui/spectrogram_widget.py`
 

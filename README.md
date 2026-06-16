@@ -108,7 +108,7 @@ Output is in `dist/Spectra/`. See `spectra.spec` for packaging details.
 | `turbo` | Perceptually uniform rainbow (Google) |
 | `jet` | Classic rainbow |
 
-`spectra` uses a custom colormap with a dedicated brightness curve (`SPECTRA_CURVE`); all other palettes are standard matplotlib colormaps rendered with a strictly linear mapping — RGB values match the matplotlib originals exactly. Curve parameters are defined in `palette.py` and require no changes to any other file to adjust.
+`spectra` uses a custom colormap with a dedicated brightness curve (`SPECTRA_CURVE`); all other palettes are generated from hardcoded color stops (sourced from matplotlib originals) via pure-numpy linear interpolation — no matplotlib dependency. Curve parameters are defined in `palette.py` and require no changes to any other file to adjust.
 
 ## Architecture · 架构
 
@@ -154,7 +154,6 @@ Spectra/
 | **mutagen** | Metadata extraction |
 | **scipy** | Signal processing |
 | **numpy** | Numerical arrays |
-| **matplotlib** | Standard colormap LUT export |
 | **numba** | JIT (librosa dependency) |
 
 ## Troubleshooting · 故障排查
