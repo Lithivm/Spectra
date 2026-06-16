@@ -85,7 +85,7 @@ class TestClippingDetection:
         t = np.linspace(0, 1.0, sr, endpoint=False)
         sine = 0.5 * np.sin(2 * np.pi * 1000 * t)
         a = _make_analyzer_with_audio(sine.astype(np.float32))
-        result = a._detect_clipping(a.data[0], sr)
+        result = a._detect_clipping(a.data, sr, a._source_format)
         assert result["ok"] is True
         assert result["count"] == 0
 
@@ -95,7 +95,7 @@ class TestClippingDetection:
         sine = 1.5 * np.sin(2 * np.pi * 1000 * t)
         clipped = np.clip(sine, -1.0, 1.0)
         a = _make_analyzer_with_audio(clipped.astype(np.float32))
-        result = a._detect_clipping(a.data[0], sr)
+        result = a._detect_clipping(a.data, sr, a._source_format)
         assert result["ok"] is False
         assert result["count"] > 0
 
@@ -103,7 +103,7 @@ class TestClippingDetection:
         sr = 48000
         silence = np.zeros(sr, dtype=np.float32)
         a = _make_analyzer_with_audio(silence)
-        result = a._detect_clipping(a.data[0], sr)
+        result = a._detect_clipping(a.data, sr, a._source_format)
         assert result["ok"] is True
 
 
