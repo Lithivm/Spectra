@@ -429,6 +429,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._stream_filled = 0
         self._stream_needs_realloc = False
         self._pending_blocks: list[tuple[int, np.ndarray]] = []
+        self._lut_needs_upload = False
 
         self._rebuild_lut()
 
@@ -492,10 +493,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._curve_lo = cp["lo"]
         self._curve_span = cp["span"]
         self._rebuild_lut()
-        if self.isValid():
-            self.makeCurrent()
-            self._upload_lut()
-            self.doneCurrent()
+        self._lut_needs_upload = True
         self.update()
 
     @property
@@ -958,6 +956,11 @@ class SpectrogramGLWidget(QOpenGLWidget):
         if self._needs_upload and self._data is not None and not self._is_streaming:
             self._upload_texture()
             self._needs_upload = False
+
+        # ── Deferred LUT upload (palette changed) ──
+        if self._lut_needs_upload:
+            self._upload_lut()
+            self._lut_needs_upload = False
 
         # ── Drain pending streaming blocks ──
         if self._pending_blocks:

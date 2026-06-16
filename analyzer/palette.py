@@ -100,13 +100,23 @@ _lut_np_cache: dict[str, np.ndarray] = {}
 
 def _export_standard_lut(name: str) -> np.ndarray:
     """Export a standard matplotlib colormap as (256, 4) uint8 RGBA LUT."""
-    import matplotlib.cm as cm
-    cmap = cm.get_cmap(name, 256)
-    rgb = (cmap(np.linspace(0, 1, 256))[:, :3] * 255).astype(np.uint8)
-    arr = np.zeros((256, 4), dtype=np.uint8)
-    arr[:, :3] = rgb
-    arr[:, 3] = 255
-    return arr
+    try:
+        import matplotlib.cm as cm
+        cmap = cm.get_cmap(name, 256)
+        rgb = (cmap(np.linspace(0, 1, 256))[:, :3] * 255).astype(np.uint8)
+        arr = np.zeros((256, 4), dtype=np.uint8)
+        arr[:, :3] = rgb
+        arr[:, 3] = 255
+        return arr
+    except Exception:
+        # Fallback: linear grayscale if matplotlib unavailable
+        arr = np.zeros((256, 4), dtype=np.uint8)
+        vals = np.linspace(0, 255, 256, dtype=np.uint8)
+        arr[:, 0] = vals
+        arr[:, 1] = vals
+        arr[:, 2] = vals
+        arr[:, 3] = 255
+        return arr
 
 
 def build_lut_np(palette_name: str = "spectra") -> np.ndarray:
