@@ -615,6 +615,7 @@ class MainWindow(QMainWindow):
 
         self._playback.state_changed.connect(self._on_playback_state)
         self._slider_dragging = False
+        self._was_playing_before_drag = False
 
         # Cursor coordinate info — floating label above spectrogram
         self._spec.cursor_info.connect(self._on_cursor_info)
@@ -1027,20 +1028,28 @@ class MainWindow(QMainWindow):
 
     def _on_slider_pressed(self) -> None:
         self._slider_dragging = True
+        self._was_playing_before_drag = self._playback.is_playing
+        if self._was_playing_before_drag:
+            self._playback.pause()
 
     def _on_slider_released(self) -> None:
         self._slider_dragging = False
-        self._seek_to_slider()
-
-    def _on_slider_changed(self, value: int) -> None:
-        if self._slider_dragging:
-            self._seek_to_slider()
-
-    def _seek_to_slider(self) -> None:
         dur = self._analyzer.duration if self._analyzer else 0
         if dur > 0:
             secs = self._progress_slider.value() / 1000.0 * dur
-            self._playback.seek(secs)
+            if self._was_playing_before_drag:
+                self._playback.seek(secs)
+                self._playback.play()
+            else:
+                self._playback.track_position(secs)
+
+    def _on_slider_changed(self, value: int) -> None:
+        if self._slider_dragging:
+            dur = self._analyzer.duration if self._analyzer else 0
+            if dur > 0:
+                secs = self._progress_slider.value() / 1000.0 * dur
+                self._playback.track_position(secs)
+                self._spec.update_playback_cursor(secs)
 
     @safe_slot
     def _on_view_changed(self) -> None:

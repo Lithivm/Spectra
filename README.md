@@ -17,7 +17,7 @@
 | **Progress Slider** — dedicated seek bar between spectrogram and X-axis | **播放进度条** — 声谱图与时间轴之间的独立滑块，拖拽定位 |
 | **Cursor Info** — hover shows time, frequency, and dB at cursor position | **光标信息** — 悬停实时显示当前时间、频率、dB 值 |
 | **Wheel Zoom** — scroll to zoom time axis, Shift+scroll for frequency axis, double-click reset | **滚轮缩放** — 滚轮缩放时间轴，Shift+滚轮缩放频率轴，双击重置 |
-| **Quality Analysis** — clipping detection, upsampling check, dynamic range (DR), LUFS (EBU R128), true peak, LRA | **质量分析** — 削波检测、升频检测、动态范围、响度 (LUFS)、真峰值 |
+| **Quality Analysis** — per-channel clipping (bit-depth-aware), upsampling check (Welch PSD + slope + Gibbs), DR, LUFS, true peak, LRA | **质量分析** — 多声道削波（位深感知）、升频检测（Welch PSD + 斜率 + Gibbs）、动态范围、响度、真峰值 |
 | **Multi-resolution STFT** — standard, multi-band, and phase-reassigned (iZotope RX style) | **多分辨率 STFT** — 标准、多频段、相位重分配三种模式 |
 | **Flexible Y-axis** — linear, logarithmic, mel, and bark frequency scales | **灵活 Y 轴** — 线性、对数、mel、bark 四种频率刻度 |
 | **Waveform Preview** — down-sampled envelope aligned with spectrogram | **波形预览** — 降采样包络，与频谱上下对齐 |
@@ -52,8 +52,8 @@ All formats decoded via PyAV (libav). No external dependencies required.
 
 | Metric | Description |
 |--------|-------------|
-| **Clipping** | Flat-top detection — hard/soft clip count, longest duration |
-| **Hi-freq Cutoff** | Multi-segment median spectrum analysis — detects upsampled/low-passed sources |
+| **Clipping** | Per-channel flat-top detection (threshold 0.999) — hard/soft classification via bit-depth-aware flatness, single-sample + multi-sample events, `channels_affected` |
+| **Hi-freq Cutoff** | Welch PSD (nperseg=8192) + multi-factor scoring — noise floor P5, signal ref P90 (2–12 kHz), spectral slope (dB/oct), Gibbs ringing detection |
 | **Dynamic Range** | P95–P10 of segmented frame RMS (TT DR Meter standard) |
 | **LUFS (I)** | EBU R128 integrated loudness |
 | **LUFS (S)** | Short-term loudness (3 s blocks, maximum) |

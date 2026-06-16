@@ -22,7 +22,7 @@ class _QualityMixin:
         tp_audio = audio.astype(np.float64)
         tp_val = self._true_peak(np.column_stack([tp_audio, tp_audio]), sr)
         return {
-            "clipping":      self._detect_clipping(audio, sr),
+            "clipping":      self._detect_clipping(self.data, sr, self._source_format),
             "upsampling":    self._detect_high_freq_cutoff(audio, sr),
             "dynamic_range": self._measure_dynamic_range(audio),
             "peak_db":       round(20 * np.log10(peak_val + 1e-12), 1),
@@ -36,164 +36,193 @@ class _QualityMixin:
     # ------------------------------------------------------------------
     # Clipping detection
     # ------------------------------------------------------------------
-    def _detect_clipping(self, audio: np.ndarray, sr: int) -> dict:
+    def _detect_clipping(self, audio: np.ndarray, sr: int, source_format: str | None) -> dict:
         """Flat-top clipping detection with hard/soft classification.
 
         Detection:
           - Any sample >= 0.999 is a candidate clip.
           - Consecutive candidates form a clip region.
-          - Regions of length >= 2 are reported as clipping events.
+          - Single-sample and multi-sample regions are both reported.
 
-        Hard vs soft classification (for regions >= 3):
-          - Hard clip: signal is at the ceiling and flat (2nd derivative ≈ 0).
-          - Soft clip: signal is at the ceiling but curved (2nd derivative ≠ 0),
+        Hard vs soft classification (for multi-sample regions):
+          - Hard clip: signal is at the ceiling and flat (ptp < flat_thresh).
+          - Soft clip: signal is at the ceiling but curved (ptp >= flat_thresh),
             e.g. tube/tape saturation.
         """
         CLIP_THRESH = 0.999
-        eps = np.finfo(np.float32).eps * 10
 
-        over = np.abs(audio) >= CLIP_THRESH
-        if not np.any(over):
+        # Flatness threshold: bit-depth-aware for integer formats
+        _INT_FLAT = {
+            's16': 1 / 16384,      # 2 quantization steps, 16-bit
+            's16p': 1 / 16384,
+            's32': 1 / (1 << 30),
+            's32p': 1 / (1 << 30),
+            's24': 1 / (1 << 22),
+            's24p': 1 / (1 << 22),
+        }
+        flat_thresh = _INT_FLAT.get(source_format or '', 1e-6)
+
+        # Ensure 2D: (channels, samples)
+        if audio.ndim == 1:
+            audio = audio[np.newaxis, :]
+
+        n_channels = audio.shape[0]
+        total_count = 0
+        total_longest_ms = 0
+        total_hard = 0
+        total_soft = 0
+        total_single = 0
+        channels_affected: list[int] = []
+
+        for ch in range(n_channels):
+            ch_data = audio[ch]
+            over = np.abs(ch_data) >= CLIP_THRESH
+            if not np.any(over):
+                continue
+
+            # Find contiguous runs of over-threshold samples
+            padded = np.empty(len(over) + 2, dtype=np.int8)
+            padded[0] = 0
+            padded[-1] = 0
+            padded[1:-1] = over.astype(np.int8)
+            edges = np.diff(padded)
+            starts = np.where(edges == 1)[0]
+            ends = np.where(edges == -1)[0] - 1
+            lengths = ends - starts + 1
+
+            # Dual-bucket: single-sample vs multi-sample
+            single_mask = lengths == 1
+            single_count = int(np.sum(single_mask))
+            multi_starts = starts[~single_mask]
+            multi_ends = ends[~single_mask]
+            multi_lengths = lengths[~single_mask]
+
+            ch_count = single_count + len(multi_starts)
+            if ch_count == 0:
+                continue
+
+            channels_affected.append(ch)
+
+            # Longest duration (multi-sample only)
+            ch_longest_ms = 0
+            if len(multi_lengths) > 0:
+                ch_longest_ms = int((multi_lengths / sr * 1000).max())
+
+            # Hard vs soft classification using ptp (peak-to-peak flatness)
+            ch_hard = 0
+            for s, e in zip(multi_starts, multi_ends):
+                segment = ch_data[s:e + 1]
+                if float(np.ptp(segment)) < flat_thresh:
+                    ch_hard += 1
+            ch_soft = len(multi_starts) - ch_hard
+
+            total_count += ch_count
+            total_longest_ms = max(total_longest_ms, ch_longest_ms)
+            total_hard += ch_hard
+            total_soft += ch_soft
+            total_single += single_count
+
+        if total_count == 0:
             return {"ok": True, "count": 0, "longest_ms": 0, "method": "flat-top"}
-
-        # Find contiguous runs of over-threshold samples
-        padded = np.empty(len(over) + 2, dtype=np.int8)
-        padded[0] = 0
-        padded[-1] = 0
-        padded[1:-1] = over.astype(np.int8)
-        edges = np.diff(padded)
-        starts = np.where(edges == 1)[0]
-        ends = np.where(edges == -1)[0] - 1
-        lengths = ends - starts + 1
-
-        # Filter: keep regions >= 2 consecutive samples (flat-top clips)
-        keep = lengths >= 2
-        clip_starts = starts[keep]
-        clip_ends = ends[keep]
-        lengths = lengths[keep]
-
-        if len(clip_starts) == 0:
-            return {"ok": True, "count": 0, "longest_ms": 0, "method": "flat-top"}
-
-        durations_ms = (lengths / sr * 1000).astype(int)
-        longest_ms = int(durations_ms.max())
-
-        # Hard vs soft classification using second derivative (curvature)
-        # Hard clip: flat top → 2nd derivative ≈ 0
-        # Soft clip: curved top → 2nd derivative ≠ 0
-        hard_count = 0
-
-        # length == 2: check if both samples are at the same level (vectorized)
-        mask_len2 = lengths == 2
-        if np.any(mask_len2):
-            s2 = clip_starts[mask_len2]
-            e2 = clip_ends[mask_len2]
-            hard_count += int(np.sum(np.abs(audio[s2] - audio[e2]) < eps))
-
-        # length >= 3: check curvature via 2nd derivative (regions vary in length)
-        mask_len3 = lengths >= 3
-        for s, e in zip(clip_starts[mask_len3], clip_ends[mask_len3]):
-            region = audio[s:e + 1]
-            d2 = np.abs(np.diff(region, n=2))
-            if np.max(d2) < eps * 10:
-                hard_count += 1
 
         return {
             "ok": False,
-            "count": len(clip_starts),
-            "longest_ms": longest_ms,
-            "hard_clips": hard_count,
-            "soft_clips": len(clip_starts) - hard_count,
+            "count": total_count,
+            "longest_ms": total_longest_ms,
+            "hard_clips": total_hard,
+            "soft_clips": total_soft,
+            "single_sample_count": total_single,
+            "channels_affected": channels_affected,
             "method": "flat-top",
         }
 
     # ------------------------------------------------------------------
     # High-frequency cutoff detection
     # ------------------------------------------------------------------
+    _SLOPE_NATURAL_MAX = -15.0   # dB/octave — natural rolloff limit
+    _SLOPE_CUTOFF_MIN  = -25.0   # dB/octave — artificial cutoff threshold
+
     def _detect_high_freq_cutoff(self, audio: np.ndarray, sr: int) -> dict:
         """Detect spectral cutoff from upsampling or low-pass filtering.
 
         Algorithm:
-          1. Compute median power spectrum across multiple random segments.
-          2. Bin into 128 log-spaced frequency bins, convert to dB.
-          3. Estimate the noise floor from the top 10% of bins.
-          4. Walk from high→low frequency to find where the spectrum rises
-             above the noise floor by >6 dB — that's the cutoff point.
-          5. Confidence = contrast between the signal band and the noise shelf.
+          1. Welch PSD — deterministic, no random segments.
+          2. Noise floor = P5 of full spectrum; signal ref = P90 of 2–12 kHz band.
+          3. Walk high→low to find where PSD rises above noise floor by >6 dB.
+          4. Spectral slope (dB/oct) on upper 1/3 band.
+          5. Gibbs ringing detection near cutoff candidate.
+          6. Multi-factor confidence = 0.4×contrast + 0.35×slope + 0.25×gibbs.
         """
-        import scipy.ndimage as ndi
+        from scipy.signal import welch
 
         nyq = sr / 2
-        seg_dur = 1.5
-        seg_len = int(seg_dur * sr)
-        n_segs = min(8, max(3, len(audio) // seg_len))
 
-        if n_segs <= 1 or len(audio) < seg_len:
-            seg_starts = np.array([0])
+        # ── Step 1: Welch PSD ──
+        freqs, psd = welch(audio, fs=sr, nperseg=8192, noverlap=4096, window='hann')
+        psd_db = 10 * np.log10(psd + 1e-12)
+
+        if np.max(psd_db) < -110:
+            return {"ok": True, "cutoff_hz": nyq, "confidence": 0.0,
+                    "slope_dboct": 0.0, "gibbs_detected": False,
+                    "method": "welch+multifactor"}
+
+        # ── Step 2: Noise floor & signal reference ──
+        noise_floor_db = float(np.percentile(psd_db, 5))
+
+        ref_mask = (freqs >= 2000) & (freqs <= 12000)
+        if ref_mask.any():
+            signal_ref_db = float(np.percentile(psd_db[ref_mask], 90))
         else:
-            max_start = len(audio) - seg_len
-            rng = np.random.default_rng(42)
-            seg_starts = np.sort(rng.integers(0, max(1, max_start), size=n_segs))
+            signal_ref_db = float(np.max(psd_db))
 
-        window = np.hanning(seg_len).astype(np.float32)
-        # Batch all segments into a 2D array for a single FFT call
-        segments = np.empty((len(seg_starts), seg_len), dtype=np.float32)
-        for i, s in enumerate(seg_starts):
-            segments[i] = audio[s:s + seg_len]
-        segments *= window  # broadcast window across all segments
-        all_specs = np.abs(np.fft.rfft(segments, axis=1)) ** 2
+        contrast_db = signal_ref_db - noise_floor_db
+        contrast_score = float(np.clip((contrast_db - 6) / 34, 0.0, 1.0))
 
-        med_spec = np.median(all_specs, axis=0)
-        freqs = np.fft.rfftfreq(seg_len, 1.0 / sr)
-
-        if np.max(med_spec) < 1e-12:
-            return {"ok": True, "cutoff_hz": nyq, "confidence": 0.0, "method": "multi-seg median"}
-
-        # Log-spaced binning
-        f_min = max(freqs[0], 100.0)
-        n_bins = 128
-        log_edges = np.logspace(np.log10(f_min), np.log10(nyq), n_bins + 1)
-        log_centers = np.sqrt(log_edges[:-1] * log_edges[1:])
-
-        binned_energy = np.zeros(n_bins)
-        bin_idx = np.clip(np.digitize(freqs, log_edges) - 1, 0, n_bins - 1)
-        counts = np.bincount(bin_idx, minlength=n_bins)
-        totals = np.bincount(bin_idx, weights=med_spec, minlength=n_bins)
-        valid = counts > 0
-        binned_energy[valid] = totals[valid] / counts[valid]
-
-        binned_db = 10 * np.log10(binned_energy + 1e-12)
-        binned_db = ndi.gaussian_filter1d(binned_db, sigma=1.5)
-
-        # ── Noise floor estimation ──
-        # The top 10% of bins (highest frequencies) represent the noise shelf
-        # if a cutoff exists, or natural rolloff if not.
-        shelf_start = int(n_bins * 0.9)
-        noise_floor_db = float(np.median(binned_db[shelf_start:]))
-
-        # ── Find cutoff: walk high→low, find where spectrum rises above floor ──
-        SHELF_THRESHOLD_DB = 6.0  # signal must be >6 dB above noise floor
+        # ── Step 3: Find cutoff — walk high→low ──
+        SHELF_THRESHOLD_DB = 6.0
         cutoff_hz = nyq
-        signal_peak_db = float(np.max(binned_db[:shelf_start]))
-
-        # Walk from top down to find the transition point
-        for i in range(n_bins - 1, -1, -1):
-            if binned_db[i] > noise_floor_db + SHELF_THRESHOLD_DB:
-                # This bin is above the shelf — cutoff is between i and i+1
-                if i < n_bins - 1:
-                    cutoff_hz = float(log_centers[i + 1])
+        for i in range(len(psd_db) - 1, -1, -1):
+            if psd_db[i] > noise_floor_db + SHELF_THRESHOLD_DB:
+                if i < len(freqs) - 1:
+                    cutoff_hz = float(freqs[i + 1])
                 else:
                     cutoff_hz = nyq
                 break
 
-        # ── Confidence: based on contrast between signal and shelf ──
-        contrast_db = signal_peak_db - noise_floor_db
-        if contrast_db > 40:
-            confidence = 1.0
-        elif contrast_db > 20:
-            confidence = (contrast_db - 20) / 20
-        else:
-            confidence = 0.0
+        # ── Step 4: Spectral slope on upper 1/3 band ──
+        slope_dboct = 0.0
+        upper_mask = (freqs >= sr / 6) & (freqs > 0)
+        if upper_mask.sum() >= 10:
+            x = np.log2(freqs[upper_mask])
+            y = psd_db[upper_mask]
+            slope_dboct = float(np.polyfit(x, y, 1)[0])
+
+        slope_score = float(np.clip(
+            (-slope_dboct - (-self._SLOPE_NATURAL_MAX))
+            / (-self._SLOPE_CUTOFF_MIN - (-self._SLOPE_NATURAL_MAX)),
+            0.0, 1.0,
+        ))
+
+        # ── Step 5: Gibbs ringing detection ──
+        gibbs_detected = False
+        if cutoff_hz < nyq * 0.85:
+            lo = cutoff_hz * 0.90
+            hi = cutoff_hz * 1.10
+            window_mask = (freqs >= lo) & (freqs <= hi)
+            if window_mask.sum() >= 3:
+                window_db = psd_db[window_mask]
+                trend = np.linspace(window_db[0], window_db[-1], len(window_db))
+                above_trend = window_db - trend
+                if float(above_trend.max()) > 3.0:
+                    gibbs_detected = True
+        gibbs_score = 1.0 if gibbs_detected else 0.0
+
+        # ── Step 6: Multi-factor confidence ──
+        confidence = (
+            0.40 * contrast_score
+            + 0.35 * slope_score
+            + 0.25 * gibbs_score
+        )
 
         # ── Decision ──
         cutoff_significant = cutoff_hz < nyq * 0.85
@@ -205,7 +234,9 @@ class _QualityMixin:
             "cutoff_hz": round(cutoff_hz),
             "nyq_hz": nyq,
             "confidence": round(confidence, 2),
-            "method": "shelf detection",
+            "slope_dboct": round(slope_dboct, 1),
+            "gibbs_detected": gibbs_detected,
+            "method": "welch+multifactor",
         }
 
     # ------------------------------------------------------------------

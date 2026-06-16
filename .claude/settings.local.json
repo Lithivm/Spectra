@@ -146,7 +146,16 @@
       "PowerShell(& \"C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" \"C:\\\\Users\\\\26279\\\\.claude\\\\plugins\\\\cache\\\\ppt-master\\\\ppt-master\\\\a0d62437f12d-32c1cf49\\\\ppt-master\\\\scripts\\\\svg_quality_checker.py\" \"D:\\\\Claude code\\\\Spectra\\\\projects\\\\spectra_intro_ppt169_20260614\" 2>&1)",
       "PowerShell(& \"C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" \"C:\\\\Users\\\\26279\\\\.claude\\\\plugins\\\\cache\\\\ppt-master\\\\ppt-master\\\\a0d62437f12d-32c1cf49\\\\ppt-master\\\\scripts\\\\total_md_split.py\" \"D:\\\\Claude code\\\\Spectra\\\\projects\\\\spectra_intro_ppt169_20260614\" 2>&1)",
       "PowerShell(& \"C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" \"C:\\\\Users\\\\26279\\\\.claude\\\\plugins\\\\cache\\\\ppt-master\\\\ppt-master\\\\a0d62437f12d-32c1cf49\\\\ppt-master\\\\scripts\\\\finalize_svg.py\" \"D:\\\\Claude code\\\\Spectra\\\\projects\\\\spectra_intro_ppt169_20260614\" 2>&1)",
-      "PowerShell(& \"C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" \"C:\\\\Users\\\\26279\\\\.claude\\\\plugins\\\\cache\\\\ppt-master\\\\ppt-master\\\\a0d62437f12d-32c1cf49\\\\ppt-master\\\\scripts\\\\svg_to_pptx.py\" \"D:\\\\Claude code\\\\Spectra\\\\projects\\\\spectra_intro_ppt169_20260614\" 2>&1)"
+      "PowerShell(& \"C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" \"C:\\\\Users\\\\26279\\\\.claude\\\\plugins\\\\cache\\\\ppt-master\\\\ppt-master\\\\a0d62437f12d-32c1cf49\\\\ppt-master\\\\scripts\\\\svg_to_pptx.py\" \"D:\\\\Claude code\\\\Spectra\\\\projects\\\\spectra_intro_ppt169_20260614\" 2>&1)",
+      "PowerShell($env:QT_QPA_PLATFORM=\"offscreen\"; python -c \"import sys; from PyQt6.QtWidgets import QApplication; app = QApplication\\(sys.argv\\); from PyQt6.QtGui import QPolygonF, QPointF; p = QPolygonF.fromList\\([QPointF\\(0,0\\), QPointF\\(1,1\\)]\\); print\\(f'count={p.count\\(\\)}'\\)\")",
+      "PowerShell($env:QT_QPA_PLATFORM=\"offscreen\"; python -c \"print\\('hello'\\)\")",
+      "PowerShell(python -c \"print\\('hello'\\)\")",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(QT_QPA_PLATFORM=offscreen 'C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe' -c ' *)",
+      "Bash('C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe' -c ' *)",
+      "WebFetch(domain:gist.github.com)",
+      "PowerShell(python -c \"import ast; f=open\\(r'D:\\\\Claude code\\\\Spectra\\\\ui\\\\main_window.py', encoding='utf-8'\\); ast.parse\\(f.read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "Bash(C:/Users/26279/AppData/Local/Programs/Python/Python310/python.exe *)"
     ]
   }
 }

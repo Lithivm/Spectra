@@ -29,8 +29,8 @@ SUPPORTED_EXTENSIONS = frozenset({
 # 公共接口
 # ---------------------------------------------------------------------------
 
-def load_audio(filepath: str | Path) -> tuple[np.ndarray, int]:
-    """加载音频文件。返回 (data: np.ndarray shape=(channels, samples), sample_rate)。"""
+def load_audio(filepath: str | Path) -> tuple[np.ndarray, int, str | None]:
+    """加载音频文件。返回 (data: np.ndarray shape=(channels, samples), sample_rate, source_format)。"""
     filepath = Path(filepath)
 
     if not filepath.exists():
@@ -39,17 +39,19 @@ def load_audio(filepath: str | Path) -> tuple[np.ndarray, int]:
     # PyAV 主解码
     result = _decode_with_av(filepath)
     if result is not None:
-        return result
+        data, sr, fmt = result
+        return data, sr, fmt
 
-    # PyAV 失败 -> ffmpeg 回退
+    # PyAV 失败 -> ffmpeg 回退（原始格式未知）
     result = _try_load_ffmpeg(filepath)
     if result is not None:
-        return result
+        data, sr = result
+        return data, sr, None
 
     raise ValueError(f"无法加载文件: {filepath}")
 
 
-def _decode_with_av(filepath: Path) -> tuple[np.ndarray, int] | None:
+def _decode_with_av(filepath: Path) -> tuple[np.ndarray, int, str | None] | None:
     """使用 PyAV 解码音频到 float32 (channels, samples) 数组。"""
     try:
         import av
@@ -69,12 +71,15 @@ def _decode_with_av(filepath: Path) -> tuple[np.ndarray, int] | None:
             chunks: list[np.ndarray] = []
             total_samples = 0
             n_channels = 0
+            source_format: str | None = None
 
             for frame in container.decode(stream):
                 arr = frame.to_ndarray()
                 if arr.dtype != np.float32:
                     arr = arr.astype(np.float32)
                     fmt_name = frame.format.name
+                    if source_format is None:
+                        source_format = fmt_name
                     if not fmt_name.startswith(('flt', 'dbl')):
                         bits = max(1, frame.format.bits)
                         arr /= float(1 << (bits - 1))
@@ -106,7 +111,7 @@ def _decode_with_av(filepath: Path) -> tuple[np.ndarray, int] | None:
                     data[0, offset:offset + n] = flat
                     offset += n
 
-            return data, sr
+            return data, sr, source_format
 
         finally:
             container.close()

@@ -21,7 +21,16 @@ class WaveformWidget(QWidget):
         self.duration = 0.0
         self._envelope_cache: np.ndarray | None = None
         self._cached_polygon: QPolygonF | None = None
-        on_lang_change(lambda _lang: self.update() if self.audio is None else None)
+        # Normalised coords (0-1): cached at set_audio, scaled at resize
+        self._norm_xs: np.ndarray | None = None
+        self._norm_ys_upper: np.ndarray | None = None
+        self._norm_ys_lower: np.ndarray | None = None
+        on_lang_change(self._on_lang)
+
+    def _on_lang(self, _lang: str) -> None:
+        """Refresh empty-state text when language changes."""
+        if self.audio is None:
+            self.update()
 
     def _build_envelope(self, channel_samples: np.ndarray) -> np.ndarray:
         n = len(channel_samples)
@@ -36,9 +45,13 @@ class WaveformWidget(QWidget):
         self.duration = duration
         self._envelope_cache = None
         self._cached_polygon = None
+        self._norm_xs = None
+        self._norm_ys_upper = None
+        self._norm_ys_lower = None
 
         if waveform is not None and waveform.size > 0:
             self._envelope_cache = self._build_envelope(waveform)
+            self._cache_normals()
             self._rebuild_polygon()
 
         self.update()
@@ -66,31 +79,45 @@ class WaveformWidget(QWidget):
         painter.setBrush(QBrush(line_color))
         painter.drawPolygon(self._cached_polygon)
 
-    def _rebuild_polygon(self) -> None:
-        """Pre-compute the waveform QPolygonF from the envelope cache."""
+    def _cache_normals(self) -> None:
+        """Cache normalised 0-1 coordinates from the envelope (called once per audio load)."""
         envelope = self._envelope_cache
         if envelope is None or len(envelope) == 0:
+            self._norm_xs = None
+            self._norm_ys_upper = None
+            self._norm_ys_lower = None
+            return
+
+        n = len(envelope)
+        # x: 0..1 along the widget width
+        self._norm_xs = np.arange(n, dtype=np.float32) / max(1, n - 1) if n > 1 else np.full(n, 0.5, dtype=np.float32)
+        # y: envelope is 0..1 amplitude; upper = center - amp*center, lower = center + amp*center
+        # normalised so that (0.5 - envelope*0.5) maps y_upper, (0.5 + envelope*0.5) maps y_lower
+        self._norm_ys_upper = (0.5 - envelope * 0.5).astype(np.float32)
+        self._norm_ys_lower = (0.5 + envelope * 0.5).astype(np.float32)
+
+    def _rebuild_polygon(self) -> None:
+        """Scale cached normals to widget size and build QPolygonF."""
+        if self._norm_xs is None:
             self._cached_polygon = None
             return
 
-        rw = self.width()
-        rh = self.height()
-        n = len(envelope)
+        rw = float(self.width())
+        rh = float(self.height())
 
-        # 向量化计算所有坐标点
-        indices = np.arange(n, dtype=np.float64)
-        xs = (indices / max(1, n - 1) * rw).astype(np.int32) if n > 1 else np.full(n, rw // 2, dtype=np.int32)
-        half = rh // 2
-        ys_upper = (half - envelope * half).astype(np.int32)
-        ys_lower = half + (half - ys_upper)
+        # Scale normalised coords to widget pixels
+        xs = (self._norm_xs * rw).astype(np.int32)
+        ys_upper = (self._norm_ys_upper * rh).astype(np.int32)
+        ys_lower = (self._norm_ys_lower * rh).astype(np.int32)
 
-        # 上半部分 + 下半部分反转
+        # Upper half (forward) + lower half (reversed) → closed polygon
         all_x = np.concatenate([xs, xs[::-1]])
         all_y = np.concatenate([ys_upper, ys_lower[::-1]])
 
+        # list comprehension is faster than generator in CPython
         self._cached_polygon = QPolygonF(
-            QPointF(float(x), float(y)) for x, y in zip(all_x, all_y)
-        ) if n > 0 else None
+            [QPointF(float(x), float(y)) for x, y in zip(all_x, all_y)]
+        )
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

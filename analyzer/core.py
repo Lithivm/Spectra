@@ -67,6 +67,7 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
         self.sample_rate: int = 0
         self.channels: int = 0
         self.duration: float = 0.0
+        self._source_format: str | None = None
 
         if filepath:
             self.load(filepath)
@@ -77,7 +78,7 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
     def load(self, filepath: str | Path) -> None:
         _ensure_librosa()
         filepath = Path(filepath)
-        self.data, self.sample_rate = load_audio(filepath)
+        self.data, self.sample_rate, self._source_format = load_audio(filepath)
         self.channels = self.data.shape[0] if self.data.ndim > 1 else 1
         self.duration = float(self.data.shape[-1]) / self.sample_rate
         self.filepath = filepath

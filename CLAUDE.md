@@ -53,7 +53,8 @@
 
 - 主解码器：**PyAV** (libav) — 支持 FLAC, OPUS, WAV, MP3, M4A, AAC, WMA, APE, OGG, TTA, AIFF
 - PyAV 解码失败时有 ffmpeg 子进程回退（容错兜底，不保证所有格式）
-- 所有格式统一输出 `(numpy.ndarray, sample_rate)` 形式，shape 为 `(channels, samples)`
+- 所有格式统一输出 `(numpy.ndarray, sample_rate, source_format)` 形式，shape 为 `(channels, samples)`
+- `source_format` 记录 PyAV 首帧的 format name（如 `"s16p"`、`"fltp"`），用于位深感知的削波分类；ffmpeg 回退路径返回 `None`
 
 ### 2.3 元数据解析 — `analyzer/metadata.py`
 
@@ -70,14 +71,15 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
     duration: float
     channels: int
     metadata: dict
+    _source_format: str | None  # PyAV format name, e.g. "s16p", "fltp"
 ```
 
 #### 关键算法
 
 - **多分辨率 STFT** — 三频段重叠拼接：低频 0–320Hz (n_fft=8192)、中频 280–3200Hz (n_fft=2048)、高频 2800Hz–Nyquist (n_fft=512)，固定 hop=512
 - **相位重分配频谱图** — iZotope RX 风格（Auger-Flandrin, IEEE TASSP 1995）。三路 STFT：原始 `S`、时间导数 `S_t`、频率导数 `S_f`，通过 `ω_corr` 和 `τ_corr` 计算瞬时频率和群延迟修正量
-- **削波检测** — flat-top 检测，`np.diff` 边缘检测，MIN_FLAT=1。硬/软分类用二阶导数（曲率）
-- **高频截止检测** — 多段 FFT + 高斯平滑 + 噪底估计 + 能量上升检测
+- **削波检测** — 多声道独立 flat-top 检测（阈值 0.999），双桶统计（单样本 / 多样本），硬/软分类用 `np.ptp` 平坦度 + 位深感知阈值（`source_format` → 量化步长），返回 `channels_affected` 和 `single_sample_count`
+- **高频截止检测** — `scipy.signal.welch` PSD（nperseg=8192, noverlap=4096），噪底 P5 + 信号参考 P90（2–12kHz），三因子置信度：对比度 0.4 + 频谱斜率 0.35（dB/oct，上 1/3 频段线性回归）+ Gibbs ringing 0.25（截止点 ±10% 趋势线偏差 >3dB）
 - **动态范围** — P95-P10 帧 RMS 差值（TT DR Meter 标准）
 - **LUFS (EBU R128)** — `pyloudnorm`，降采样保护，LRA 精确插值
 
@@ -85,7 +87,7 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
 
 - **相位重分配**：`S_sq` 和 `mag` 从 `S` 的实部/虚部一次性推导，省去重复的 `np.abs` 调用
 - **多分辨率 STFT 频率去重**：用 `np.diff` + boolean mask 向量化替代 Python 逐元素循环
-- **高频截止检测**：多段 FFT 拼成 2D 数组，单次 `np.fft.rfft(axis=1)` 批量计算
+- **高频截止检测**：`scipy.signal.welch` 一次调用覆盖全文件，确定性结果（无随机片段）
 - **True Peak 去重**：`analyze_quality()` 计算一次 true peak 后传入 `_measure_loudness()` 复用
 
 ### 2.5 配色方案 — `analyzer/palette.py`
@@ -271,7 +273,7 @@ analyzer/core.py
 
 - `analyzer/_state.py`：`import pyfftw` 移入 `_ensure_wisdom()` / `_flush_wisdom()`
 - `analyzer/spectrum.py`：`import librosa` 移入各方法内部
-- `analyzer/quality.py`：`import librosa` 移入 `_measure_dynamic_range()`，`import pyloudnorm` 移入 `_measure_loudness()`
+- `analyzer/quality.py`：`import librosa` 移入 `_measure_dynamic_range()`，`import pyloudnorm` 移入 `_measure_loudness()`，`import scipy.signal` 移入 `_detect_high_freq_cutoff()`
 - `analyzer/core.py`：`_ensure_librosa()` 在 `load()` 中调用，含 FutureWarning 抑制
 - `ui/main_window.py`：`AudioAnalyzer` 导入推迟到 `_LoadWorker.run()` / `_BatchWorker.run()`
 
@@ -293,5 +295,5 @@ analyzer/core.py
 
 ---
 
-> 最后更新: 2026-06-16 (配色方案系统重构：spectra/标准配色隔离、曲线参数 preset 化)
+> 最后更新: 2026-06-16 (配色方案系统重构 + 削波/高频检测算法重写：多声道削波、位深感知、Welch PSD、多因子置信度)
 > 基于文件: main.py, ui/main_window.py, analyzer/core.py, analyzer/_state.py, analyzer/spectrum.py, analyzer/quality.py, analyzer/load.py, analyzer/metadata.py, analyzer/batch.py, analyzer/palette.py, ui/spectrogram_widget.py, ui/metadata_panel.py, ui/waveform_widget.py, ui/playback_engine.py, ui/batch_dialog.py, ui/styles.py, ui/shaders/spectrogram.vert, ui/shaders/spectrogram.frag, lang.py, spectra.spec
