@@ -477,9 +477,11 @@ class MainWindow(QMainWindow):
         self._colorbar: _ColorBarWidget | None = None
         self._meta: MetadataPanel | None = None
         self._analyzer: AudioAnalyzer | None = None
-        self._current_palette = "inferno"
+        self._current_palette = "spectra"
         self._fft_size = 8192
         self._mode = "standard"
+
+        self._slider_dragging = False
 
         self._playback = PlaybackEngine(self)
         self._playback_timer = QTimer(self)
@@ -570,7 +572,9 @@ class MainWindow(QMainWindow):
 
         self._colorbar = _ColorBarWidget()
         self._colorbar.setFixedWidth(36)
-        self._colorbar.set_data(self._spec._lut_np)
+        _uc, _cp, _cl, _cs = self._spec.get_curve_params()
+        self._colorbar.set_data(self._spec._lut_np, use_curve=_uc,
+                                curve_power=_cp, curve_lo=_cl, curve_span=_cs)
         _grid.addWidget(self._colorbar, 1, 2)
 
         # Row 2: X-axis spans all 3 columns, data offset-aligned to spectrogram
@@ -589,7 +593,7 @@ class MainWindow(QMainWindow):
         self._meta.setFixedWidth(310)
         root_layout.addWidget(self._meta)
 
-        self._spec.set_palette("inferno")
+        self._spec.set_palette("spectra")
 
         # Floating cursor info label — child of spec_card, positioned at cursor x
         self._cursor_label = QLabel(spec_card)
@@ -678,7 +682,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._pal_label)
         self._palette_combo = QComboBox()
         self._palette_combo.addItems(list(PALETTE.keys()))
-        self._palette_combo.setCurrentText("inferno")
+        self._palette_combo.setCurrentText("spectra")
         self._palette_combo.setFixedHeight(30)
         self._palette_combo.currentTextChanged.connect(self._on_palette_changed)
         layout.addWidget(self._palette_combo)
@@ -773,7 +777,9 @@ class MainWindow(QMainWindow):
         if self._spec:
             self._spec.set_palette(name)
             if self._colorbar:
-                self._colorbar.set_data(self._spec._lut_np)
+                _uc, _cp, _cl, _cs = self._spec.get_curve_params()
+                self._colorbar.set_data(self._spec._lut_np, use_curve=_uc,
+                                        curve_power=_cp, curve_lo=_cl, curve_span=_cs)
 
     def _on_mode_changed(self, mode: str) -> None:
         self._mode = mode
@@ -842,7 +848,9 @@ class MainWindow(QMainWindow):
                               self._spec._view_f0, self._spec._view_f1)
         self._x_axis.set_data(self._analyzer.duration,
                               self._spec._view_t0, self._spec._view_t1)
-        self._colorbar.set_data(self._spec._lut_np)
+        _uc, _cp, _cl, _cs = self._spec.get_curve_params()
+        self._colorbar.set_data(self._spec._lut_np, use_curve=_uc,
+                                curve_power=_cp, curve_lo=_cl, curve_span=_cs)
 
     @safe_slot
     def _on_stream_init(self, freqs: np.ndarray, total_cols: int, duration: float) -> None:
@@ -852,7 +860,9 @@ class MainWindow(QMainWindow):
                               self._spec._view_f0, self._spec._view_f1)
         self._x_axis.set_data(duration,
                               self._spec._view_t0, self._spec._view_t1)
-        self._colorbar.set_data(self._spec._lut_np)
+        _uc, _cp, _cl, _cs = self._spec.get_curve_params()
+        self._colorbar.set_data(self._spec._lut_np, use_curve=_uc,
+                                curve_power=_cp, curve_lo=_cl, curve_span=_cs)
 
     @safe_slot
     def _on_stream_block(self, c0: int, blk: np.ndarray) -> None:
@@ -1086,7 +1096,6 @@ class MainWindow(QMainWindow):
         old_quality = self._quality_worker
         self._quality_worker = None
         self._hold_ref(old_quality)
-        self._spec.hide_progress()
         if qa and "upsampling" in qa:
             cutoff = qa["upsampling"].get("cutoff_hz")
             self._spec.set_cutoff_line(cutoff)

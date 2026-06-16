@@ -18,6 +18,7 @@ from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
 from lang import t
+from analyzer.palette import build_lut_np, is_spectra, get_curve_params
 
 
 def _load_shader(name: str) -> str:
@@ -32,173 +33,20 @@ def _load_shader(name: str) -> str:
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
-# ── Palette anchor stops ──────────────────────────────────────────
-_PALETTE_STOPS: dict[str, list[tuple[float, tuple[float, float, float]]]] = {
-    "rx": [
-        (0.00, (0.000, 0.000, 0.000)),       # black (-120 dB)
-        (0.08, (0.000, 0.020, 0.120)),       # near-black deep blue (-110 dB)
-        (0.18, (0.050, 0.050, 0.250)),       # dark violet-blue
-        (0.30, (0.100, 0.120, 0.400)),       # purple
-        (0.40, (0.000, 0.350, 0.550)),       # blue-cyan
-        (0.48, (0.000, 0.550, 0.600)),       # cyan — RX primary
-        (0.55, (0.550, 0.420, 0.000)),       # warm brown (~ -60 dB)
-        (0.62, (0.880, 0.520, 0.000)),       # orange (~ -45 dB, knee)
-        (0.72, (0.950, 0.320, 0.000)),       # orange-red
-        (0.82, (0.920, 0.120, 0.000)),       # deep red
-        (0.91, (0.980, 0.280, 0.080)),       # bright red-orange
-        (0.97, (1.000, 0.650, 0.250)),       # bright warm highlight
-        (1.00, (1.000, 1.000, 1.000)),       # white (0 dB)
-    ],
-    "inferno": [
-        (0.00, (0.00, 0.00, 0.02)),
-        (0.15, (0.08, 0.01, 0.34)),
-        (0.35, (0.37, 0.07, 0.43)),
-        (0.55, (0.69, 0.16, 0.21)),
-        (0.75, (0.92, 0.37, 0.07)),
-        (0.90, (0.99, 0.65, 0.04)),
-        (1.00, (0.99, 0.88, 0.37)),
-    ],
-    "viridis": [
-        (0.00, (0.27, 0.00, 0.33)),
-        (0.25, (0.28, 0.14, 0.46)),
-        (0.50, (0.13, 0.53, 0.56)),
-        (0.75, (0.37, 0.77, 0.37)),
-        (1.00, (0.99, 0.91, 0.14)),
-    ],
-    "plasma": [
-        (0.00, (0.05, 0.03, 0.53)),
-        (0.25, (0.45, 0.01, 0.61)),
-        (0.50, (0.62, 0.26, 0.37)),
-        (0.75, (0.85, 0.53, 0.10)),
-        (1.00, (0.94, 0.98, 0.13)),
-    ],
-    "magma": [
-        (0.00, (0.001462, 0.000466, 0.013866)),
-        (0.15, (0.156511, 0.034391, 0.404977)),
-        (0.35, (0.407590, 0.102322, 0.381350)),
-        (0.55, (0.706747, 0.173181, 0.289928)),
-        (0.75, (0.916242, 0.385741, 0.110804)),
-        (0.90, (0.987622, 0.643683, 0.038760)),
-        (1.00, (0.987053, 0.875393, 0.372698)),
-    ],
-    "ice": [
-        (0.00, (0.00, 0.00, 0.08)),
-        (0.20, (0.00, 0.10, 0.28)),
-        (0.40, (0.00, 0.25, 0.50)),
-        (0.60, (0.10, 0.50, 0.75)),
-        (0.80, (0.50, 0.80, 0.95)),
-        (1.00, (0.95, 0.98, 1.00)),
-    ],
-    "fire": [
-        (0.00, (0.00, 0.00, 0.00)),
-        (0.15, (0.12, 0.00, 0.00)),
-        (0.35, (0.40, 0.08, 0.00)),
-        (0.55, (0.75, 0.25, 0.00)),
-        (0.75, (0.95, 0.55, 0.05)),
-        (0.90, (1.00, 0.82, 0.20)),
-        (1.00, (1.00, 1.00, 0.85)),
-    ],
-    "aurora": [
-        (0.00, (0.02, 0.02, 0.15)),
-        (0.20, (0.05, 0.20, 0.35)),
-        (0.40, (0.10, 0.45, 0.30)),
-        (0.60, (0.30, 0.65, 0.25)),
-        (0.80, (0.70, 0.80, 0.45)),
-        (1.00, (0.95, 0.95, 0.80)),
-    ],
-}
-
-LUT_SIZE = 256
-DB_MIN = -120.0
-DB_MAX = 0.0
-GAMMA = 1.0
-KNEE_DB = -45.0   # lower knee — more signal stays in the dark region
-NOISE_DB = -110.0  # noise floor crush starts here, pure black at DB_MIN
-
-
-# ── LUT helpers ────────────────────────────────────────────────────
-
-def _rgb_lerp(stops: list, t: float) -> tuple[float, float, float]:
-    if t <= stops[0][0]:
-        return stops[0][1]
-    if t >= stops[-1][0]:
-        return stops[-1][1]
-    for i in range(len(stops) - 1):
-        t0, c0 = stops[i]
-        t1, c1 = stops[i + 1]
-        if t0 <= t <= t1:
-            f = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
-            return (
-                c0[0] + f * (c1[0] - c0[0]),
-                c0[1] + f * (c1[1] - c0[1]),
-                c0[2] + f * (c1[2] - c0[2]),
-            )
-    return stops[-1][1]
-
 
 _lut_cache: dict[str, list[QColor]] = {}
-_lut_np_cache: dict[str, np.ndarray] = {}
 
 
-def build_lut(palette_name: str = "rx") -> list[QColor]:
-    """Precompute 256-entry colour LUT. Results are cached per palette name.
-
-    Three-region dB→brightness curve:
-      DB_MIN … NOISE_DB : power-law crush  →  near-black  (deep background)
-      NOISE_DB … KNEE_DB : smooth power-law ramp  →  gradual colour emergence
-      KNEE_DB … 0 dB     : power-law rise  →  bright musical peaks
-
-    Gamma = 1.0 (linear — curve handles the shaping).
-    """
+def build_lut(palette_name: str = "spectra") -> list[QColor]:
+    """Precompute 256-entry QColor LUT. Wraps build_lut_np with QColor cache."""
     cached = _lut_cache.get(palette_name)
     if cached is not None:
         return cached
 
-    stops = _PALETTE_STOPS.get(palette_name, _PALETTE_STOPS["rx"])
-
-    # Normalised positions
-    nf = (NOISE_DB - DB_MIN) / (DB_MAX - DB_MIN)
-    kn = (KNEE_DB - DB_MIN) / (DB_MAX - DB_MIN)
-
-    lut: list[QColor] = []
-    for i in range(LUT_SIZE):
-        x = i / (LUT_SIZE - 1)          # 0 = DB_MIN, 1 = 0 dB
-
-        if x < nf:
-            # noise floor: soft crush to black — only pure black near DB_MIN
-            t = (x / nf) ** 2.0 * 0.06
-        elif x < kn:
-            # mid-range: slow ramp, stays dark
-            s = (x - nf) / (kn - nf)
-            t = 0.06 + (s ** 1.8) * 0.39
-        else:
-            # above knee: fast brightening
-            s = (x - kn) / (1.0 - kn)
-            t = 0.45 + 0.55 * (s ** 0.4)
-
-        t = max(0.0, min(1.0, t))
-        # Gamma correction (currently 1.0 — identity)
-        t = t ** GAMMA
-        r, g, b = _rgb_lerp(stops, t)
-        lut.append(QColor(int(r * 255), int(g * 255), int(b * 255), 250))
-
+    arr = build_lut_np(palette_name)
+    lut = [QColor(int(r), int(g), int(b), int(a)) for r, g, b, a in arr]
     _lut_cache[palette_name] = lut
     return lut
-
-
-def build_lut_np(palette_name: str = "rx") -> np.ndarray:
-    """Return shape=(256,4) uint8 numpy LUT for vectorised rendering. Cached."""
-    cached = _lut_np_cache.get(palette_name)
-    if cached is not None:
-        return cached
-
-    qcolors = build_lut(palette_name)
-    arr = np.zeros((LUT_SIZE, 4), dtype=np.uint8)
-    for i, c in enumerate(qcolors):
-        arr[i] = [c.red(), c.green(), c.blue(), c.alpha()]
-
-    _lut_np_cache[palette_name] = arr
-    return arr
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -417,21 +265,41 @@ class _ColorBarWidget(QWidget):
         super().__init__(parent)
         self._lut: np.ndarray = np.zeros((256, 4), dtype=np.uint8)
         self._bar_img: QImage | None = None
+        self._use_curve: bool = False
+        self._curve_power: float = 1.0
+        self._curve_lo: float = 0.0
+        self._curve_span: float = 1.0
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
-    def set_data(self, lut_np: np.ndarray) -> None:
+    def set_data(self, lut_np: np.ndarray, use_curve: bool = False,
+                 curve_power: float = 1.0, curve_lo: float = 0.0,
+                 curve_span: float = 1.0) -> None:
         self._lut = np.ascontiguousarray(lut_np[:, :4]) if lut_np is not None else np.zeros((256, 4), dtype=np.uint8)
+        self._use_curve = use_curve
+        self._curve_power = curve_power
+        self._curve_lo = curve_lo
+        self._curve_span = curve_span
         self._bar_img = None
         self.update()
 
+    def _brightness_curve(self, t: float) -> float:
+        """Brightness curve — matches shader: pow then clamp remap."""
+        t = t ** self._curve_power
+        return max(0.0, min(1.0, (t - self._curve_lo) / self._curve_span))
+
     def _build_bar_image(self) -> None:
-        """Build a vertical 1-pixel-wide gradient image — top = 0 dB, bottom = -90 dB."""
+        """Build a vertical 1-pixel-wide gradient image — top = 0 dB, bottom = -120 dB."""
         lut = self._lut
         n_lut = len(lut)
         img = QImage(1, n_lut, QImage.Format.Format_RGBA8888)
         for i in range(n_lut):
-            r, g, b, a = int(lut[i][0]), int(lut[i][1]), int(lut[i][2]), int(lut[i][3])
-            # Row 0 = top = 0 dB (lut[-1]), row n_lut-1 = bottom = -90 dB (lut[0])
+            t = i / max(n_lut - 1, 1)
+            if self._use_curve:
+                t = self._brightness_curve(t)
+            idx = int(round(t * (n_lut - 1)))
+            idx = max(0, min(idx, n_lut - 1))
+            r, g, b, a = int(lut[idx][0]), int(lut[idx][1]), int(lut[idx][2]), int(lut[idx][3])
+            # Row 0 = top = 0 dB (lut[-1]), row n_lut-1 = bottom = -120 dB (lut[0])
             img.setPixelColor(0, n_lut - 1 - i, QColor(r, g, b, a))
         self._bar_img = img
 
@@ -510,9 +378,13 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._tex_id: int | None = None
         self._gl_program: int | None = None
         self._vao: int | None = None
-        self._palette_name = "inferno"
+        self._palette_name = "spectra"
         self._lut_tex_id: int | None = None
         self._lut_np: np.ndarray = np.zeros((256, 4), dtype=np.uint8)
+        _cp = get_curve_params("spectra")
+        self._curve_power: float = _cp["power"]
+        self._curve_lo: float = _cp["lo"]
+        self._curve_span: float = _cp["span"]
         self._vmin = -120.0
         self._vmax = 0.0
         self._yscale_mode = "linear"
@@ -615,12 +487,25 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
     def set_palette(self, name: str) -> None:
         self._palette_name = name
+        cp = get_curve_params(name)
+        self._curve_power = cp["power"]
+        self._curve_lo = cp["lo"]
+        self._curve_span = cp["span"]
         self._rebuild_lut()
         if self.isValid():
             self.makeCurrent()
             self._upload_lut()
             self.doneCurrent()
         self.update()
+
+    @property
+    def use_brightness_curve(self) -> bool:
+        """Whether the current palette uses a brightness curve."""
+        return is_spectra(self._palette_name)
+
+    def get_curve_params(self) -> tuple[bool, float, float, float]:
+        """Return (use_curve, power, lo, span) for colorbar sync."""
+        return (self.use_brightness_curve, self._curve_power, self._curve_lo, self._curve_span)
 
     def _on_yscale_changed(self, scale: str) -> None:
         self._yscale_mode = scale
@@ -774,7 +659,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._u_colormap  = glGetUniformLocation(self._gl_program, "u_colormap")
         self._u_vmin      = glGetUniformLocation(self._gl_program, "u_vmin")
         self._u_vmax      = glGetUniformLocation(self._gl_program, "u_vmax")
-        self._u_log_scale = glGetUniformLocation(self._gl_program, "u_log_scale")
+        self._u_scale_mode = glGetUniformLocation(self._gl_program, "u_scale_mode")
         self._u_f_min        = glGetUniformLocation(self._gl_program, "u_f_min")
         self._u_f_max        = glGetUniformLocation(self._gl_program, "u_f_max")
         self._u_filled_cols  = glGetUniformLocation(self._gl_program, "u_filled_cols")
@@ -784,6 +669,9 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._u_t_end        = glGetUniformLocation(self._gl_program, "u_t_end")
         self._u_fview_min    = glGetUniformLocation(self._gl_program, "u_fview_min")
         self._u_fview_max    = glGetUniformLocation(self._gl_program, "u_fview_max")
+        self._u_curve_power  = glGetUniformLocation(self._gl_program, "u_curve_power")
+        self._u_curve_lo     = glGetUniformLocation(self._gl_program, "u_curve_lo")
+        self._u_curve_span   = glGetUniformLocation(self._gl_program, "u_curve_span")
 
         self._vao = glGenVertexArrays(1)
 
@@ -1111,7 +999,8 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
         glUniform1f(self._u_vmin, self._vmin)
         glUniform1f(self._u_vmax, self._vmax)
-        glUniform1i(self._u_log_scale, 1 if self._yscale_mode == "log" else 0)
+        _scale_map = {"linear": 0, "log": 1, "mel": 2, "bark": 3}
+        glUniform1i(self._u_scale_mode, _scale_map.get(self._yscale_mode, 0))
         glUniform1f(self._u_f_min, self._freq_min)
         glUniform1f(self._u_f_max, self._freq_max)
         glUniform1i(self._u_filled_cols, self._stream_filled)
@@ -1121,6 +1010,9 @@ class SpectrogramGLWidget(QOpenGLWidget):
         glUniform1f(self._u_t_end, self._view_t1)
         glUniform1f(self._u_fview_min, self._view_f0)
         glUniform1f(self._u_fview_max, self._view_f1)
+        glUniform1f(self._u_curve_power, self._curve_power)
+        glUniform1f(self._u_curve_lo, self._curve_lo)
+        glUniform1f(self._u_curve_span, self._curve_span)
 
         glBindVertexArray(self._vao)
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)

@@ -12,7 +12,7 @@
 
 | English | 中文 |
 |---------|------|
-| **OpenGL Spectrogram** — fragment shader with real-time colormap switching (12 palettes) | **OpenGL 频谱图** — 片段着色器渲染，实时切换 12 种色板 |
+| **OpenGL Spectrogram** — fragment shader with real-time colormap switching (10 palettes) | **OpenGL 频谱图** — 片段着色器渲染，实时切换 10 种色板 |
 | **Audio Playback** — play/pause with progress slider, synchronized with waveform | **音频播放** — 播放/暂停，进度滑块与波形同步 |
 | **Progress Slider** — dedicated seek bar between spectrogram and X-axis | **播放进度条** — 声谱图与时间轴之间的独立滑块，拖拽定位 |
 | **Cursor Info** — hover shows time, frequency, and dB at cursor position | **光标信息** — 悬停实时显示当前时间、频率、dB 值 |
@@ -97,18 +97,18 @@ Output is in `dist/Spectra/`. See `spectra.spec` for packaging details.
 
 | Name | Description |
 |------|-------------|
-| `rx` | iZotope RX style — black → cyan → orange → white |
-| `inferno` | Perceptually uniform, warm (default) |
+| `spectra` | Custom palette with brightness curve (default) |
+| `inferno` | Perceptually uniform, warm |
 | `viridis` | Perceptually uniform, blue-green-yellow |
 | `plasma` | Perceptually uniform, purple-orange-yellow |
 | `magma` | Perceptually uniform, dark-purple-yellow |
-| `cividis` | Perceptually uniform, blue-yellow (colorblind-safe) |
 | `hot` | Black → red → yellow |
 | `coolwarm` | Cool blue → warm red (diverging) |
 | `seismic` | Blue → white → red (diverging) |
-| `ice` | Dark blue → cyan → white |
-| `fire` | Black → orange → yellow → white |
-| `aurora` | Dark teal → green → warm white |
+| `turbo` | Perceptually uniform rainbow (Google) |
+| `jet` | Classic rainbow |
+
+`spectra` uses a custom colormap with a dedicated brightness curve (`SPECTRA_CURVE`); all other palettes are standard matplotlib colormaps rendered with a strictly linear mapping — RGB values match the matplotlib originals exactly. Curve parameters are defined in `palette.py` and require no changes to any other file to adjust.
 
 ## Architecture · 架构
 
@@ -123,7 +123,7 @@ Spectra/
 │   ├── quality.py               # _QualityMixin — clipping, LUFS, DR
 │   ├── load.py                  # PyAV multi-format decoder
 │   ├── metadata.py              # Tag extraction via mutagen
-│   ├── palette.py               # Colormap registry (zero-dependency)
+│   ├── palette.py               # Colormap registry + curve presets (zero-dependency)
 │   └── batch.py                 # CSV export for batch analysis
 ├── ui/
 │   ├── main_window.py           # Main window, toolbar, playback slider, workers
@@ -135,7 +135,7 @@ Spectra/
 │   ├── styles.py                # Color tokens for dark theme
 │   └── shaders/
 │       ├── spectrogram.vert     # GLSL vertex shader
-│       └── spectrogram.frag     # GLSL fragment shader (zoom uniforms)
+│       └── spectrogram.frag     # GLSL fragment shader (zoom + curve uniforms)
 └── assets/
     ├── logo.png
     └── logo.ico
@@ -154,6 +154,7 @@ Spectra/
 | **mutagen** | Metadata extraction |
 | **scipy** | Signal processing |
 | **numpy** | Numerical arrays |
+| **matplotlib** | Standard colormap LUT export |
 | **numba** | JIT (librosa dependency) |
 
 ## Troubleshooting · 故障排查
@@ -169,4 +170,4 @@ MIT
 
 ---
 
-*Built with PyQt6, OpenGL, librosa, pyFFTW, and sounddevice.*
+*Built with PyQt6, OpenGL, librosa, pyFFTW, matplotlib, and sounddevice.*
