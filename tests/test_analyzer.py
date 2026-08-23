@@ -267,3 +267,79 @@ class TestAudioAnalyzerState:
         wf = a.waveform
         assert wf.ndim == 1
         assert len(wf) == sr
+
+
+# ── F1: peak / true-peak / loudness must use ALL channels ─────────────
+
+def _make_stereo(l, r, sr=48000):
+    from analyzer.core import AudioAnalyzer
+    a = AudioAnalyzer()
+    a.filepath = Path("/fake/st.wav")
+    a.sample_rate = sr
+    data = np.stack([l, r]).astype(np.float32)
+    a.data = data
+    a.duration = len(l) / sr
+    a.channels = 2
+    a._mono = data[0]
+    a._source_format = None
+    return a
+
+
+class TestChannelHandling:
+    def test_peak_truepeak_loudness_use_all_channels(self):
+        """R louder than L -> peak/true-peak/loudness must reflect R, not L."""
+        sr = 48000
+        t = np.arange(sr * 2) / sr
+        L = (0.10 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+        R = (0.90 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+        a = _make_stereo(L, R, sr)
+        qa = a.analyze_quality()
+        assert qa["peak_db"] > -5, f"peak_db={qa['peak_db']} should reflect R (~-0.9), not L (-20)"
+        assert qa["true_peak_db"] > -5, f"true_peak_db={qa['true_peak_db']} should reflect R"
+        assert qa["loudness"]["integrated_lufs"] > -12, (
+            f"integrated={qa['loudness']['integrated_lufs']} should be near R, not L"
+        )
+
+    def test_peak_mono_unchanged(self):
+        """Regression guard: mono peak still correct after all-channel change."""
+        sr = 48000
+        t = np.arange(sr) / sr
+        a = _make_analyzer_with_audio((0.5 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32), sr)
+        qa = a.analyze_quality()
+        assert -7 < qa["peak_db"] < -5  # ~ -6 dBFS
+
+
+class TestClippingIsolation:
+    """F2: isolated full-scale peaks are NOT clips; flat-top runs ARE."""
+
+    def test_isolated_single_samples_not_flagged(self):
+        sr = 48000
+        n = sr * 2
+        clean = np.zeros(n, dtype=np.float32)
+        for i in range(0, n, 500):
+            clean[i] = 1.0  # isolated single-sample full-scale peaks
+        a = _make_analyzer_with_audio(clean, sr)
+        res = a._detect_clipping(a.data, sr, None)
+        assert res["ok"] is True, f"isolated full-scale peaks should not be clips, got ok={res['ok']}"
+        assert res["single_sample_count"] > 0
+
+    def test_flat_top_run_flagged(self):
+        sr = 48000
+        t = np.arange(sr * 2) / sr
+        clipped = np.clip(1.5 * np.sin(2 * np.pi * 1000 * t), -1, 1).astype(np.float32)
+        a = _make_analyzer_with_audio(clipped, sr)
+        res = a._detect_clipping(a.data, sr, None)
+        assert res["ok"] is False
+        assert res["count"] > 0
+
+    def test_clean_fullscale_sine_not_flagged(self):
+        """A clean sine peaking at exactly full scale (no flat-top) is not a clip."""
+        sr = 48000
+        t = np.arange(sr * 2) / sr
+        s = np.sin(2 * np.pi * 1000 * t)
+        s = s / np.max(np.abs(s))  # max sample == 1.0, but no run of full-scale samples
+        a = _make_analyzer_with_audio(s.astype(np.float32), sr)
+        res = a._detect_clipping(a.data, sr, None)
+        assert res["ok"] is True, (
+            f"clean full-scale sine should not be a clip, got ok={res['ok']} count={res.get('count')}"
+        )

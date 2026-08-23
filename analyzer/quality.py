@@ -16,21 +16,30 @@ class _QualityMixin:
     def analyze_quality(self, cancel_check=None) -> dict:
         if self.data is None:
             raise RuntimeError("未加载音频")
-        audio = self._mono
         sr = self.sample_rate
-        peak_val, peak_idx = self._compute_peak(audio)
-        tp_audio = audio.astype(np.float64)
-        tp_val = self._true_peak(np.column_stack([tp_audio, tp_audio]), sr)
+        # Full-mix view (samples, channels) for peak/true-peak/loudness — must
+        # reflect ALL channels, not just channel 0.
+        data_t = self.data.T
+        # Channel-0 view for spectral/single-channel metrics (upsampling/rms/zcr/DR).
+        mono = self.data[0] if self.data.ndim > 1 else self.data
+
+        # Peak reflects ALL channels, not just channel 0.
+        abs_data = np.abs(self.data)
+        peak_val = float(abs_data.max())
+        _, sample_of_peak = np.unravel_index(int(np.argmax(abs_data)), self.data.shape)
+        peak_idx = int(sample_of_peak)
+
+        tp_val = self._true_peak(data_t, sr)
         return {
             "clipping":      self._detect_clipping(self.data, sr, self._source_format),
-            "upsampling":    self._detect_high_freq_cutoff(audio, sr),
-            "dynamic_range": self._measure_dynamic_range(audio),
-            "peak_db":       round(20 * np.log10(peak_val + 1e-12), 1),
+            "upsampling":    self._detect_high_freq_cutoff(mono, sr),
+            "dynamic_range": self._measure_dynamic_range(mono),
+            "peak_db":       round(20 * np.log10(peak_val + 1e-12), 1) if peak_val > 0 else -120.0,
             "peak_sample":   peak_idx,
             "true_peak_db":  tp_val,
-            "rms":           round(self._compute_rms(audio), 6),
-            "zero_crossing": self._compute_zcr(audio),
-            "loudness": self._measure_loudness(audio, sr, cancel_check, tp_val),
+            "rms":           round(self._compute_rms(mono), 6),
+            "zero_crossing": self._compute_zcr(mono),
+            "loudness": self._measure_loudness(data_t, sr, cancel_check, tp_val),
         }
 
     # ------------------------------------------------------------------
@@ -41,8 +50,9 @@ class _QualityMixin:
 
         Detection:
           - Any sample >= 0.999 is a candidate clip.
-          - Consecutive candidates form a clip region.
-          - Single-sample and multi-sample regions are both reported.
+          - Consecutive candidates form a clip region (a run).
+          - Only runs of >= MIN_RUN consecutive full-scale samples count as clips;
+            isolated single samples are informational (single_sample_count).
 
         Hard vs soft classification (for multi-sample regions):
           - Hard clip: signal is at the ceiling and flat (ptp < flat_thresh).
@@ -50,6 +60,7 @@ class _QualityMixin:
             e.g. tube/tape saturation.
         """
         CLIP_THRESH = 0.999
+        MIN_RUN = 2  # a clip is >= this many consecutive full-scale samples
 
         # Flatness threshold: bit-depth-aware for integer formats
         _INT_FLAT = {
@@ -90,23 +101,25 @@ class _QualityMixin:
             ends = np.where(edges == -1)[0] - 1
             lengths = ends - starts + 1
 
-            # Dual-bucket: single-sample vs multi-sample
-            single_mask = lengths == 1
+            # Dual-bucket: only runs of >= MIN_RUN consecutive full-scale samples
+            # count as clips; shorter runs (isolated spikes / sine peaks) are
+            # informational via single_sample_count.
+            single_mask = lengths < MIN_RUN
             single_count = int(np.sum(single_mask))
+            total_single += single_count
+
             multi_starts = starts[~single_mask]
             multi_ends = ends[~single_mask]
             multi_lengths = lengths[~single_mask]
 
-            ch_count = single_count + len(multi_starts)
+            ch_count = len(multi_starts)   # clips = runs of >= MIN_RUN only
             if ch_count == 0:
                 continue
 
             channels_affected.append(ch)
 
             # Longest duration (multi-sample only)
-            ch_longest_ms = 0
-            if len(multi_lengths) > 0:
-                ch_longest_ms = int((multi_lengths / sr * 1000).max())
+            ch_longest_ms = int((multi_lengths / sr * 1000).max())
 
             # Hard vs soft classification using ptp (peak-to-peak flatness)
             ch_hard = 0
@@ -114,16 +127,22 @@ class _QualityMixin:
                 segment = ch_data[s:e + 1]
                 if float(np.ptp(segment)) < flat_thresh:
                     ch_hard += 1
-            ch_soft = len(multi_starts) - ch_hard
+            ch_soft = ch_count - ch_hard
 
             total_count += ch_count
             total_longest_ms = max(total_longest_ms, ch_longest_ms)
             total_hard += ch_hard
             total_soft += ch_soft
-            total_single += single_count
 
         if total_count == 0:
-            return {"ok": True, "count": 0, "longest_ms": 0, "method": "flat-top"}
+            return {
+                "ok": True,
+                "count": 0,
+                "longest_ms": 0,
+                "single_sample_count": total_single,
+                "channels_affected": channels_affected,
+                "method": "flat-top",
+            }
 
         return {
             "ok": False,
@@ -291,24 +310,21 @@ class _QualityMixin:
     # ------------------------------------------------------------------
     # Loudness (EBU R128)
     # ------------------------------------------------------------------
-    def _measure_loudness(self, audio: np.ndarray, sr: int, cancel_check=None, true_peak_val: float | None = None) -> dict:
-        """EBU R128 integrated loudness, short-term, LRA, true-peak (BS.1770-4)."""
+    def _measure_loudness(self, audio_st: np.ndarray, sr: int, cancel_check=None, true_peak_val: float | None = None) -> dict:
+        """EBU R128 integrated loudness, short-term, LRA, true-peak (BS.1770-4).
+
+        audio_st: (samples, n_channels) — all channels; Meter applies R128 gains.
+        """
         import pyloudnorm as pyln
-        if audio.ndim == 1:
-            audio_st = np.repeat(audio[:, np.newaxis], 2, axis=1)
-        else:
-            audio_st = audio.T[:, :2]
-        if audio_st.shape[1] == 1:
-            audio_st = np.repeat(audio_st, 2, axis=1)
+        if audio_st.ndim == 1:
+            audio_st = audio_st[:, np.newaxis]
 
         TARGET_SR = 12000
         if sr > TARGET_SR * 1.5:
             from scipy.signal import decimate
             factor = max(1, sr // TARGET_SR)
             meter_sr = sr // factor
-            ch = audio_st[:, 0].astype(np.float64)
-            ch = decimate(ch, factor, zero_phase=True)
-            audio_meter = np.repeat(ch[:, np.newaxis], 2, axis=1)
+            audio_meter = decimate(audio_st.astype(np.float64), factor, zero_phase=True, axis=0)
         else:
             meter_sr = sr
             audio_meter = audio_st.astype(np.float64)
