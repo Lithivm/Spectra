@@ -167,6 +167,8 @@ bass-only 80-5k        -> ok=False, cutoff≈5000±容差   （值修正；flag 
 
 ## F5 — 相位重分配：量纲/归一化与 Auger-Flandrin 不符（P2）
 
+**✅ 已完成（M3，采用降级方案）**：合成 tone/chirp 验证表明当前校正不能稳定把纯音定位到精确频率；在缺少可靠校准公式与参考实现的情况下，不将其伪装成标准 reassignment。保留现有渲染行为，并将 API/docstring 明确标为 heuristic sharpening，不把坐标当作测量值。
+
 **现状**：`_reassigned_spectrogram` 声称 iZotope RX / Auger-Flandrin (IEEE TASSP 1995) 风格，但几处对不上标准公式：
 - **归一化 ramp**：时间用 `linspace(-1,1,N)`、频率用归一化 bin index `(arange(n_fft)-n_fft/2)/(n_fft/2)`，均非物理 time/freq 单位 → correction 幅度被缩放常数倍。
 - **time / freq ramp 归一化不一致**（一个按 `N`、一个按 `n_fft`），两个 correction 项尺度互不匹配。
@@ -183,13 +185,14 @@ bass-only 80-5k        -> ok=False, cutoff≈5000±容差   （值修正；flag 
 **涉及文件**：`analyzer/spectrum.py`（`_reassigned_spectrogram`）。
 
 **测试与验收**：
-- chirp 脊线跟踪误差 ≤ ±1 bin；tone 落在精确 bin。
-- 视觉/数值锐化 ≥ 标准 STFT（同信号对比熵或峰值集中度）。
-- 若验证后仍无法对齐参考 → 改 docstring 为「启发式锐化渲染」，不宣称 Auger-Flandrin。
+- 若按标准公式实现：chirp 脊线跟踪误差 ≤ ±1 bin；tone 落在精确 bin。
+- 本次验证未满足 tone 的标准定位要求，因此采用降级验收：输出维度、有限值和渲染稳定性回归测试通过；docstring 不宣称 Auger-Flandrin。
 
 ---
 
 ## F6 — True Peak 内存峰值高（P3）
+
+**✅ 已完成（M4）**：`_true_peak` 改为带滤波器上下文的 2 秒分块 `resample_poly`，只保留每块核心输出并滚动维护全局峰值，避免按文件长度分配上采样数组。
 
 **现状**：`_true_peak` 对全文件做 `resample_poly(4×)` float64。10min/48k 立体声峰值 ~1GB+。
 
@@ -199,6 +202,8 @@ bass-only 80-5k        -> ok=False, cutoff≈5000±容差   （值修正；flag 
 **验收**：长文件 true peak 结果不变，峰值内存显著下降（可加 `tracemalloc` 断言上界）。
 
 ## F7 — `_mono` 命名误导 + 声谱图只画左声道（P3）
+
+**✅ 已完成（M4）**：频谱分析统一使用 `waveform` 的真实 mixdown；核心状态改为 `_first_channel`/`_mixdown`。质量指标按声道聚合：RMS/ZCR 取最大声道，截止检测取最早截止声道，避免右声道独有内容被忽略。
 
 **现状**：`self._mono = self.data[0]` 是 channel 0；STFT/声谱图可视化只用它 → 右声道独有瞬态在图上看不到。
 
@@ -213,6 +218,8 @@ bass-only 80-5k        -> ok=False, cutoff≈5000±容差   （值修正；flag 
 
 ## F8 — short-term loudness 非重叠块 / LRA 简化（P3）
 
+**✅ 已完成（M4）**：short-term loudness 改为 3 秒窗口、1 秒步长（75% overlap）。LRA 仍是共享 short-term 数组的 P10-P95 近似值，已在 docstring 中明确，不宣称完整 EBU LRA 实现。
+
 **现状**：short-term 用非重叠 3s 块（R128 是 ~75% overlap 重叠窗）；LRA 简化为 short-term 的 P95-P10（非严格 R128 LRA）。
 
 **方案**：
@@ -223,6 +230,8 @@ bass-only 80-5k        -> ok=False, cutoff≈5000±容差   （值修正；flag 
 **验收**：与 `pyloudnorm`/参考对一段已知响度变化的素材对比，偏差在可接受范围；docstring 如实。
 
 ## F9 — DR `as_strided` 极短音频越界 view（P3）
+
+**✅ 已完成（M4）**：F4 重写 DR 后，原先的 `as_strided` 路径已不存在；短于 3 秒的 loudness 输入现在直接返回空 short-term 数组，DR 安全返回 0，并有回归测试。
 
 **现状**：`n < frame_len` 时 `as_strided(shape=(1, frame_len))` 构造越界 view（UB）。当前结果被丢弃不会崩，但属未定义行为。
 
@@ -238,7 +247,7 @@ bass-only 80-5k        -> ok=False, cutoff≈5000±容差   （值修正；flag 
 - **M1 = F1 + F2**（P0）：互不依赖，可并行；先做，用户直接受益。
 - **M2 = F4 + F3**（P1）：F4 方案 A 需让 `_measure_loudness` 暴露/返回 short-term loudness 数组供 DR 复用（当前内部算完即弃）；这与 F8 的重叠窗改进相互独立，不必先做 F8。F3 独立。
 - **M3 = F5**（P2）：验证先行，独立。
-- **M4 = F6 + F7 + F8 + F9**（P3）：小改动收尾。
+- **M4 = F6 + F7 + F8 + F9**（P3）：小改动收尾，已完成。
 
 ## 风险与开放问题
 

@@ -63,7 +63,8 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
         self.filepath: Path | None = None
         self.metadata: dict = {}
         self.data: np.ndarray | None = None
-        self._mono: np.ndarray | None = None
+        self._first_channel: np.ndarray | None = None
+        self._mixdown: np.ndarray | None = None
         self.sample_rate: int = 0
         self.channels: int = 0
         self.duration: float = 0.0
@@ -83,7 +84,12 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
         self.duration = float(self.data.shape[-1]) / self.sample_rate
         self.filepath = filepath
         self.metadata = get_metadata(filepath)
-        self._mono = self.data[0] if self.data.ndim > 1 else self.data
+        if self.data.ndim > 1:
+            self._first_channel = self.data[0]
+            self._mixdown = np.mean(self.data, axis=0)
+        else:
+            self._first_channel = self.data
+            self._mixdown = self.data
 
     # ------------------------------------------------------------------
     # Waveform

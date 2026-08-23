@@ -148,6 +148,11 @@ class TestDynamicRange:
         res, _ = self._dr(x)
         assert res["dr"] == 0.0
 
+    def test_very_short_audio_has_no_loudness_range(self):
+        a = _make_analyzer_with_audio(np.zeros(100, dtype=np.float32))
+        assert a._short_term_loudness_values(a.data.T, a.sample_rate) == []
+        assert a._measure_dynamic_range([]) == {"dr": 0.0}
+
     def test_dr_equals_lra(self):
         # F4 (Option A): DR and LRA are the same R128 measurement.
         a = _make_analyzer_with_audio(self._alternating_loudness().astype(np.float32))
@@ -217,6 +222,21 @@ class TestHighFreqCutoff:
         # A gradual 4th-order rolloff is not an artificial hard edge.
         r = self._run(self._gentle_lp(fc=15000, order=4))
         assert r["ok"] is True
+
+
+class TestReassignedSpectrogram:
+    def test_heuristic_mode_returns_finite_spectrogram(self):
+        sr = 48000
+        t = np.arange(sr // 4) / sr
+        audio = (0.5 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+        a = _make_analyzer_with_audio(audio, sr)
+        freqs, times, db = a._reassigned_spectrogram(
+            n_fft=1024, hop_length=256
+        )
+        assert freqs.ndim == times.ndim == 1
+        assert db.shape == (len(freqs), len(times))
+        assert np.isfinite(db).all()
+        assert "heuristic" in a._reassigned_spectrogram.__doc__.lower()
 
 
 class TestZeroCrossingRate:
@@ -399,6 +419,15 @@ class TestChannelHandling:
         a = _make_analyzer_with_audio((0.5 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32), sr)
         qa = a.analyze_quality()
         assert -7 < qa["peak_db"] < -5  # ~ -6 dBFS
+
+    def test_channel_specific_metrics_include_right_channel(self):
+        sr = 48000
+        t = np.arange(sr * 2) / sr
+        right = (0.8 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+        a = _make_stereo(np.zeros_like(right), right, sr)
+        qa = a.analyze_quality()
+        assert qa["rms"] > 0.5
+        assert qa["zero_crossing"] > 3000
 
 
 class TestClippingIsolation:

@@ -20,8 +20,8 @@ class _QualityMixin:
         # Full-mix view (samples, channels) for peak/true-peak/loudness — must
         # reflect ALL channels, not just channel 0.
         data_t = self.data.T
-        # Channel-0 view for spectral/single-channel metrics (upsampling/rms/zcr/DR).
-        mono = self.data[0] if self.data.ndim > 1 else self.data
+        # Per-channel views preserve transient/channel-specific quality issues.
+        channels = self.data if self.data.ndim > 1 else self.data[np.newaxis, :]
 
         # Peak reflects ALL channels, not just channel 0.
         abs_data = np.abs(self.data)
@@ -33,15 +33,19 @@ class _QualityMixin:
         # R128 short-term loudness (all channels), computed once and shared by
         # LRA and dynamic-range (F4: DR = P95-P10 of the same array).
         st_vals = self._short_term_loudness_values(data_t, sr, cancel_check)
+        upsampling_by_channel = [
+            self._detect_high_freq_cutoff(channel, sr) for channel in channels
+        ]
+        upsampling = min(upsampling_by_channel, key=lambda result: result["cutoff_hz"])
         return {
             "clipping":      self._detect_clipping(self.data, sr, self._source_format),
-            "upsampling":    self._detect_high_freq_cutoff(mono, sr),
+            "upsampling":    upsampling,
             "dynamic_range": self._measure_dynamic_range(st_vals),
             "peak_db":       round(20 * np.log10(peak_val + 1e-12), 1) if peak_val > 0 else -120.0,
             "peak_sample":   peak_idx,
             "true_peak_db":  tp_val,
-            "rms":           round(self._compute_rms(mono), 6),
-            "zero_crossing": self._compute_zcr(mono),
+            "rms":           round(max(self._compute_rms(channel) for channel in channels), 6),
+            "zero_crossing": max(self._compute_zcr(channel) for channel in channels),
             "loudness": self._measure_loudness(data_t, sr, cancel_check, tp_val, st_vals=st_vals),
         }
 
@@ -312,10 +316,11 @@ class _QualityMixin:
         return round(float(p95 - p10), 1)
 
     def _short_term_loudness_values(self, audio_st: np.ndarray, sr: int, cancel_check=None) -> list[float]:
-        """R128 short-term loudness (3s blocks) over the full mix → list of LUFS.
+        """R128-style short-term loudness over the full mix → list of LUFS.
 
-        The expensive part (per-block K-weighted meter integration); computed once
-        per analysis and shared by LRA and dynamic-range.
+        Uses 3-second K-weighted windows with 1-second steps. The expensive
+        per-window meter integrations are computed once and shared by the
+        approximate LRA and dynamic-range metrics.
         """
         import pyloudnorm as pyln
         if audio_st.ndim == 1:
@@ -333,21 +338,27 @@ class _QualityMixin:
         meter = pyln.Meter(meter_sr)
         block_s = 3
         hop = block_s * meter_sr
-        n_blocks = max(1, len(audio_meter) // hop)
+        if len(audio_meter) < hop:
+            return []
+        # R128 short-term loudness uses a 3-second window advanced every second
+        # (75% overlap), rather than independent non-overlapping blocks.
+        n_blocks = 1 + (len(audio_meter) - hop) // meter_sr
         st_vals: list[float] = []
         for i in range(n_blocks):
+            start = i * meter_sr
             if cancel_check is not None and cancel_check():
                 break
-            block = audio_meter[i * hop : (i + 1) * hop]
-            if len(block) >= meter_sr:
+            block = audio_meter[start : start + hop]
+            if len(block) == hop:
                 st_vals.append(float(meter.integrated_loudness(block)))
         return st_vals
 
     def _measure_loudness(self, audio_st: np.ndarray, sr: int, cancel_check=None, true_peak_val: float | None = None, st_vals: list[float] | None = None) -> dict:
-        """EBU R128 integrated loudness, short-term, LRA, true-peak (BS.1770-4).
+        """R128 integrated/short-term loudness plus approximate LRA and true peak.
 
-        audio_st: (samples, n_channels) — all channels; Meter applies R128 gains.
-        st_vals: shared short-term array; computed here if not supplied.
+        audio_st: (samples, n_channels), all channels; Meter applies R128 gains.
+        st_vals: shared short-term array; computed here if not supplied. LRA is
+        the project's P10-P95 approximation over the short-term values.
         """
         import pyloudnorm as pyln
         if audio_st.ndim == 1:
@@ -380,14 +391,31 @@ class _QualityMixin:
 
     @staticmethod
     def _true_peak(audio_st: np.ndarray, sr: int) -> float:
-        """BS.1770-4 true peak: 4× polyphase upsampling → max |sample| → dBTP."""
+        """Measure BS.1770 true peak with bounded-memory chunked upsampling."""
         from scipy import signal as scipy_signal
 
+        if audio_st.ndim == 1:
+            audio_st = audio_st[:, np.newaxis]
         oversample = 4
-        # Batch both channels in one resample_poly call (axis=0)
-        upsampled = scipy_signal.resample_poly(
-            audio_st.astype(np.float64), oversample, 1, axis=0)
-        peak = float(np.max(np.abs(upsampled)))
+        chunk_len = max(1, int(sr * 2.0))
+        # Keep enough input context for the polyphase FIR, then discard the
+        # context outputs. This avoids boundary artifacts while keeping memory
+        # proportional to a two-second chunk.
+        context = 256
+        peak = 0.0
+        n_samples = len(audio_st)
+        for start in range(0, n_samples, chunk_len):
+            end = min(start + chunk_len, n_samples)
+            ext_start = max(0, start - context)
+            ext_end = min(n_samples, end + context)
+            chunk = scipy_signal.resample_poly(
+                audio_st[ext_start:ext_end].astype(np.float64),
+                oversample, 1, axis=0)
+            out_start = (start - ext_start) * oversample
+            out_end = out_start + (end - start) * oversample
+            core = chunk[out_start:out_end]
+            if len(core):
+                peak = max(peak, float(np.max(np.abs(core))))
         if peak < 1e-12:
             return -120.0
         return round(20 * math.log10(peak), 1)

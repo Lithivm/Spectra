@@ -36,7 +36,7 @@ class _SpectrumMixin:
         hop = hop_length or (n_fft // 4)
         if win_length is None:
             win_length = n_fft
-        audio = self._mono
+        audio = self.waveform
         S = librosa.stft(audio, n_fft=n_fft, hop_length=hop,
                          win_length=win_length, window=window)
         freqs = librosa.fft_frequencies(sr=self.sample_rate, n_fft=n_fft)
@@ -142,7 +142,7 @@ class _SpectrumMixin:
 
         import pyfftw
 
-        audio = self._mono
+        audio = self.waveform
         sr = self.sample_rate
         n_fft_w = win_length or n_fft
         n_freqs = n_fft // 2 + 1
@@ -263,7 +263,7 @@ class _SpectrumMixin:
         High (3k–Nyquist) : n_fft=512  — sharp transients.
         """
         import librosa
-        audio = self._mono
+        audio = self.waveform
         sr = self.sample_rate
         nyq = sr / 2.0
 
@@ -317,14 +317,16 @@ class _SpectrumMixin:
         win_length: int | None = None,
         window: str = "hann",
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Phase-reassigned spectrogram — ultra-sharp time-frequency rendering.
+        """Heuristic phase-sharpened spectrogram.
 
-        Relocates STFT energy from grid centres to true instantaneous-frequency /
-        group-delay coordinates using first-order phase derivatives (Auger-Flandrin
-        method, IEEE TASSP 1995).
+        Relocates STFT energy using first-order phase-like corrections. The
+        current implementation is a rendering heuristic, not a standards-
+        compliant Auger-Flandrin reassignment implementation; callers should
+        not treat its coordinates as calibrated instantaneous frequency or
+        group delay measurements.
         """
         import librosa
-        audio = self._mono
+        audio = self.waveform
         sr = self.sample_rate
         hop = hop_length or (n_fft // 4)
         wlen = win_length or n_fft
@@ -408,7 +410,7 @@ class _SpectrumMixin:
         if self.data is None:
             raise RuntimeError("未加载音频")
         hop = hop_length or (n_fft // 8)
-        audio = self._mono
+        audio = self.waveform
         fmax = fmax or (self.sample_rate / 2.0)
 
         S = librosa.feature.melspectrogram(
@@ -429,7 +431,7 @@ class _SpectrumMixin:
         import librosa
         if self.data is None:
             raise RuntimeError("未加载音频")
-        audio = self._mono
+        audio = self.waveform
         return librosa.feature.mfcc(y=audio, sr=self.sample_rate, n_mfcc=n_mfcc)
 
     # ------------------------------------------------------------------
@@ -438,7 +440,7 @@ class _SpectrumMixin:
     def rms(self, frame_length: int = 2048, hop_length: int | None = None) -> np.ndarray:
         import librosa
         hop = hop_length or (frame_length // 4)
-        audio = self._mono
+        audio = self.waveform
         return librosa.feature.rms(y=audio, frame_length=frame_length, hop_length=hop)[0]
 
     # ------------------------------------------------------------------
@@ -448,7 +450,7 @@ class _SpectrumMixin:
         import librosa
         if self.data is None:
             raise RuntimeError("未加载音频")
-        audio = self._mono
+        audio = self.waveform
         centroid = librosa.feature.spectral_centroid(y=audio, sr=self.sample_rate)[0]
         t = np.linspace(0, self.duration, len(centroid))
         return t, centroid
