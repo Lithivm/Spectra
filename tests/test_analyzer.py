@@ -389,14 +389,14 @@ class TestAudioAnalyzerState:
 
 # ── F1: peak / true-peak / loudness must use ALL channels ─────────────
 
-def _make_stereo(l, r, sr=48000):
+def _make_stereo(left, right, sr=48000):
     from analyzer.core import AudioAnalyzer
     a = AudioAnalyzer()
     a.filepath = Path("/fake/st.wav")
     a.sample_rate = sr
-    data = np.stack([l, r]).astype(np.float32)
+    data = np.stack([left, right]).astype(np.float32)
     a.data = data
-    a.duration = len(l) / sr
+    a.duration = len(left) / sr
     a.channels = 2
     a._mono = data[0]
     a._source_format = None
