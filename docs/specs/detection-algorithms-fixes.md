@@ -140,6 +140,13 @@ bass-only 80-5k        -> ok=False, cutoff≈5000±容差   （值修正；flag 
 - DR 现应随「响度范围」变化（与 LRA 同向），而非纯 RMS 离散度。
 - docstring 与实际方法一致（A 或 B 任一，二选一落地）。
 
+**✅ 已实现（M2）**：方案 A 落地。
+- `_measure_dynamic_range(st_vals)` 改为取 R128 short-term loudness 数组的 P95-P10（LU），与 LRA 共用同一 `_loudness_percentile_range` helper → **DR ≡ LRA**、口径一致。
+- 新增 `_short_term_loudness_values()`：全混音声道一次算出 3s 块 short-term loudness，供 LRA 与 DR 共享（昂贵的 meter 积分只做一遍）；`analyze_quality` 先算一次 `st_vals` 再分别喂给两者。
+- **顺带修复**：原 LRA/DR 对全静音会因 `-inf` 算出 `nan`，现 `_loudness_percentile_range` 过滤非有限值（<3 个有限样本→0）。
+- **实证**（12s 立体声、分块响度交替、R 通道主导）：DR = LRA = 24.1 LU；integrated = -4.7 LUFS（全混音，R 主导）；静音 → DR/LRA = 0；稳态正弦 → DR = 0。
+- **注意**：3s 非重叠块 → 需 ≥ ~9s 音频才有 ≥3 个样本，更短则 DR=0（与现有 LRA 行为一致）。声道问题中 **DR 已改全混音**；`rms`/`zero_crossing`/`upsampling` 仍读 channel-0，并入 F7。
+
 ---
 
 ## F5 — 相位重分配：量纲/归一化与 Auger-Flandrin 不符（P2）
@@ -178,6 +185,8 @@ bass-only 80-5k        -> ok=False, cutoff≈5000±容差   （值修正；flag 
 ## F7 — `_mono` 命名误导 + 声谱图只画左声道（P3）
 
 **现状**：`self._mono = self.data[0]` 是 channel 0；STFT/声谱图可视化只用它 → 右声道独有瞬态在图上看不到。
+
+> **范围补充（M2/F4 后确认）**：除可视化外，`analyze_quality` 里 `rms`、`zero_crossing`、`upsampling`（高频截止检测）也仍读 channel-0。这三项各自需定聚合语义（RMS/ZCR 取逐声道 max；截止检测取「最可能过采样」的声道/混音），非 F4 能顺手重定义，故并入本项统一处理。
 
 **方案**：
 - 重命名 `_mono` → `_first_channel`，或新增真正的 `_mixdown`（`(L+R)/2` 或 `sum/√n`）属性。

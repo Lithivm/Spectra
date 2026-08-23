@@ -108,23 +108,51 @@ class TestClippingDetection:
 
 
 class TestDynamicRange:
-    def test_sine_dr_nonzero(self):
-        # Signal with amplitude modulation → DR > 0
+    """F4: DR = P95-P10 of R128 short-term loudness (LU), same family as LRA.
+
+    Needs >= ~9s of audio for 3 x 3s short-term blocks; shorter → DR == 0.
+    """
+
+    def _dr(self, x):
+        a = _make_analyzer_with_audio(np.asarray(x, dtype=np.float32))
+        st = a._short_term_loudness_values(a.data.T, a.sample_rate)
+        return a._measure_dynamic_range(st), a
+
+    @staticmethod
+    def _alternating_loudness(sr=48000, secs=12):
+        # 4 x 3s sections alternating quiet/loud → short-term loudness swings.
+        n = sr * secs
+        t = np.arange(n) / sr
+        tone = np.sin(2 * np.pi * 1000 * t)
+        x = np.zeros(n)
+        for i in range(secs // 3):
+            amp = 0.05 if i % 2 == 0 else 0.8
+            x[i * sr * 3:(i + 1) * sr * 3] = amp * tone[i * sr * 3:(i + 1) * sr * 3]
+        return x
+
+    def test_varying_loudness_dr_positive(self):
+        res, _ = self._dr(self._alternating_loudness())
+        assert "dr" in res
+        assert res["dr"] > 0
+
+    def test_steady_tone_dr_near_zero(self):
         sr = 48000
-        t = np.linspace(0, 2.0, 2 * sr, endpoint=False)
-        envelope = 0.1 + 0.9 * (0.5 + 0.5 * np.sin(2 * np.pi * 0.5 * t))  # 0.5 Hz AM
-        sine = envelope * np.sin(2 * np.pi * 1000 * t)
-        a = _make_analyzer_with_audio(sine.astype(np.float32))
-        result = a._measure_dynamic_range(a.data[0])
-        assert "dr" in result
-        assert result["dr"] > 0
+        n = sr * 12
+        t = np.arange(n) / sr
+        x = 0.5 * np.sin(2 * np.pi * 440 * t)  # constant loudness
+        res, _ = self._dr(x)
+        assert res["dr"] < 1.0
 
     def test_silence_dr_zero(self):
-        sr = 48000
-        silence = np.zeros(sr, dtype=np.float32)
-        a = _make_analyzer_with_audio(silence)
-        result = a._measure_dynamic_range(a.data[0])
-        assert result["dr"] == 0.0
+        x = np.zeros(48000 * 3, dtype=np.float32)  # -inf blocks → filtered → 0
+        res, _ = self._dr(x)
+        assert res["dr"] == 0.0
+
+    def test_dr_equals_lra(self):
+        # F4 (Option A): DR and LRA are the same R128 measurement.
+        a = _make_analyzer_with_audio(self._alternating_loudness().astype(np.float32))
+        q = a.analyze_quality()
+        assert q["dynamic_range"]["dr"] == q["loudness"]["lra_lu"]
 
 
 class TestZeroCrossingRate:

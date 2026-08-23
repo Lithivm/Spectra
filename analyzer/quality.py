@@ -30,16 +30,19 @@ class _QualityMixin:
         peak_idx = int(sample_of_peak)
 
         tp_val = self._true_peak(data_t, sr)
+        # R128 short-term loudness (all channels), computed once and shared by
+        # LRA and dynamic-range (F4: DR = P95-P10 of the same array).
+        st_vals = self._short_term_loudness_values(data_t, sr, cancel_check)
         return {
             "clipping":      self._detect_clipping(self.data, sr, self._source_format),
             "upsampling":    self._detect_high_freq_cutoff(mono, sr),
-            "dynamic_range": self._measure_dynamic_range(mono),
+            "dynamic_range": self._measure_dynamic_range(st_vals),
             "peak_db":       round(20 * np.log10(peak_val + 1e-12), 1) if peak_val > 0 else -120.0,
             "peak_sample":   peak_idx,
             "true_peak_db":  tp_val,
             "rms":           round(self._compute_rms(mono), 6),
             "zero_crossing": self._compute_zcr(mono),
-            "loudness": self._measure_loudness(data_t, sr, cancel_check, tp_val),
+            "loudness": self._measure_loudness(data_t, sr, cancel_check, tp_val, st_vals=st_vals),
         }
 
     # ------------------------------------------------------------------
@@ -261,38 +264,16 @@ class _QualityMixin:
     # ------------------------------------------------------------------
     # Dynamic range
     # ------------------------------------------------------------------
-    def _measure_dynamic_range(self, audio: np.ndarray) -> dict:
-        """Dynamic range: P95 - P10 of frame RMS levels (dB).
+    def _measure_dynamic_range(self, st_vals: list[float]) -> dict:
+        """Dynamic range = P95 - P10 of R128 short-term loudness (LU).
 
-        Uses ~100ms frames (4096 samples @ 44.1kHz) with 50% hop.
-        Matches the DR meter convention used by TT DR Meter and similar tools.
-        Measures each channel separately and returns the maximum DR.
+        Same measurement family as EBU R128 LRA / TT DR Meter: how far the
+        perceived loudness swings over time. Derived from the shared short-term
+        array (see _short_term_loudness_values) so it stays consistent with LRA
+        and covers the full mix, not just one channel. Returns 0 when fewer
+        than 3 finite samples are available (needs >= ~9s at 3s blocks).
         """
-        frame_len = 4096
-        hop = frame_len // 2
-
-        def _dr_single_channel(ch: np.ndarray) -> float:
-            n = len(ch)
-            n_frames = max(1, (n - frame_len) // hop + 1)
-            shape = (n_frames, frame_len)
-            strides = (ch.strides[0] * hop, ch.strides[0])
-            frames = np.lib.stride_tricks.as_strided(ch, shape=shape, strides=strides)
-            rms = np.sqrt(np.mean(frames ** 2, axis=1))
-            rms = rms[rms > 1e-10]  # exclude silence
-            if len(rms) < 2:
-                return 0.0
-            frames_db = 20 * np.log10(rms)
-            p95 = float(np.percentile(frames_db, 95))
-            p10 = float(np.percentile(frames_db, 10))
-            return p95 - p10
-
-        # TT DR Meter: measure each channel, take the maximum
-        if self.data is not None and self.data.ndim > 1:
-            dr = max(_dr_single_channel(self.data[ch]) for ch in range(self.data.shape[0]))
-        else:
-            dr = _dr_single_channel(audio)
-
-        return {"dr": round(dr, 1)}
+        return {"dr": self._loudness_percentile_range(st_vals)}
 
     # ------------------------------------------------------------------
     # Basic metrics
@@ -310,10 +291,56 @@ class _QualityMixin:
     # ------------------------------------------------------------------
     # Loudness (EBU R128)
     # ------------------------------------------------------------------
-    def _measure_loudness(self, audio_st: np.ndarray, sr: int, cancel_check=None, true_peak_val: float | None = None) -> dict:
+    @staticmethod
+    def _loudness_percentile_range(st_vals: list[float]) -> float:
+        """P95 - P10 of the finite short-term loudness values (LU).
+
+        0 when fewer than 3 finite samples. Shared by LRA and dynamic-range so
+        both are computed identically from the same array.
+        """
+        vals = np.array([v for v in st_vals if np.isfinite(v)], dtype=np.float64)
+        if len(vals) < 3:
+            return 0.0
+        p10, p95 = np.percentile(vals, [10, 95])
+        return round(float(p95 - p10), 1)
+
+    def _short_term_loudness_values(self, audio_st: np.ndarray, sr: int, cancel_check=None) -> list[float]:
+        """R128 short-term loudness (3s blocks) over the full mix → list of LUFS.
+
+        The expensive part (per-block K-weighted meter integration); computed once
+        per analysis and shared by LRA and dynamic-range.
+        """
+        import pyloudnorm as pyln
+        if audio_st.ndim == 1:
+            audio_st = audio_st[:, np.newaxis]
+        TARGET_SR = 12000
+        if sr > TARGET_SR * 1.5:
+            from scipy.signal import decimate
+            factor = max(1, sr // TARGET_SR)
+            meter_sr = sr // factor
+            audio_meter = decimate(audio_st.astype(np.float64), factor, zero_phase=True, axis=0)
+        else:
+            meter_sr = sr
+            audio_meter = audio_st.astype(np.float64)
+
+        meter = pyln.Meter(meter_sr)
+        block_s = 3
+        hop = block_s * meter_sr
+        n_blocks = max(1, len(audio_meter) // hop)
+        st_vals: list[float] = []
+        for i in range(n_blocks):
+            if cancel_check is not None and cancel_check():
+                break
+            block = audio_meter[i * hop : (i + 1) * hop]
+            if len(block) >= meter_sr:
+                st_vals.append(float(meter.integrated_loudness(block)))
+        return st_vals
+
+    def _measure_loudness(self, audio_st: np.ndarray, sr: int, cancel_check=None, true_peak_val: float | None = None, st_vals: list[float] | None = None) -> dict:
         """EBU R128 integrated loudness, short-term, LRA, true-peak (BS.1770-4).
 
         audio_st: (samples, n_channels) — all channels; Meter applies R128 gains.
+        st_vals: shared short-term array; computed here if not supplied.
         """
         import pyloudnorm as pyln
         if audio_st.ndim == 1:
@@ -329,34 +356,18 @@ class _QualityMixin:
             meter_sr = sr
             audio_meter = audio_st.astype(np.float64)
 
+        if st_vals is None:
+            st_vals = self._short_term_loudness_values(audio_st, sr, cancel_check)
         meter = pyln.Meter(meter_sr)
         integrated = float(meter.integrated_loudness(audio_meter))
-
-        block_s = 3
-        hop = block_s * meter_sr
-        n_blocks = max(1, len(audio_meter) // hop)
-        st_vals: list[float] = []
-        for i in range(n_blocks):
-            if cancel_check is not None and cancel_check():
-                break
-            block = audio_meter[i * hop : (i + 1) * hop]
-            if len(block) >= meter_sr:
-                st_vals.append(float(meter.integrated_loudness(block)))
-        short_term = max(st_vals) if st_vals else integrated
-
-        if len(st_vals) >= 3:
-            sv = np.array(sorted(st_vals))
-            p10, p95 = np.percentile(sv, [10, 95])
-            lra = round(float(p95 - p10), 1)
-        else:
-            lra = 0.0
+        short_term = max((v for v in st_vals if np.isfinite(v)), default=integrated)
 
         tp = true_peak_val if true_peak_val is not None else self._true_peak(audio_st, sr)
 
         return {
             "integrated_lufs": round(integrated, 1),
             "short_term_lufs": round(short_term, 1),
-            "lra_lu": lra,
+            "lra_lu": self._loudness_percentile_range(st_vals),
             "true_peak_db": tp,
         }
 
