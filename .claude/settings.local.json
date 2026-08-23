@@ -155,7 +155,16 @@
       "Bash('C:\\\\Users\\\\26279\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe' -c ' *)",
       "WebFetch(domain:gist.github.com)",
       "PowerShell(python -c \"import ast; f=open\\(r'D:\\\\Claude code\\\\Spectra\\\\ui\\\\main_window.py', encoding='utf-8'\\); ast.parse\\(f.read\\(\\)\\); print\\('Syntax OK'\\)\")",
-      "Bash(C:/Users/26279/AppData/Local/Programs/Python/Python310/python.exe *)"
+      "Bash(C:/Users/26279/AppData/Local/Programs/Python/Python310/python.exe *)",
+      "Bash(node -e ' *)",
+      "Bash(node \"C:/Users/26279/.claude/plugins/cache/understand-anything/understand-anything/2.8.0/skills/understand/scan-project.mjs\" \"D:/Claude code/Spectra\" \"D:/Claude code/Spectra/.understand-anything/tmp/ua-scan-files.json\")",
+      "Bash(node *)",
+      "PowerShell(python -c \"import json; data = json.load\\(open\\(r'D:\\\\Claude code\\\\Spectra\\\\.understand-anything\\\\intermediate\\\\batch-2.json'\\)\\); print\\(f'Nodes: {len\\(data[\\\\\"nodes\\\\\"]\\)}'\\); print\\(f'Edges: {len\\(data[\\\\\"edges\\\\\"]\\)}'\\); imports = [e for e in data['edges'] if e['type'] == 'imports']; print\\(f'Import edges: {len\\(imports\\)}'\\); expected = 0 + 2 + 2 + 3 + 0 + 2; print\\(f'Expected imports: {expected}'\\)\")",
+      "PowerShell(python -c \"import json; d=json.load\\(open\\(r'D:\\\\Claude code\\\\Spectra\\\\.understand-anything\\\\intermediate\\\\batch-6.json'\\)\\); print\\(f'Nodes: {len\\(d[\\\\\"nodes\\\\\"]\\)}'\\); print\\(f'Edges: {len\\(d[\\\\\"edges\\\\\"]\\)}'\\)\")",
+      "Bash(echo \"EXIT_CODE=$?\")",
+      "Bash(python \"C:/Users/26279/.claude/plugins/cache/understand-anything/understand-anything/2.8.0/skills/understand/merge-batch-graphs.py\" \"D:/Claude code/Spectra\")",
+      "Bash(echo \"EXIT=$?\")",
+      "Read(//tmp/**)"
     ]
   }
 }

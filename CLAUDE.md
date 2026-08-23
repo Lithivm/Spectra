@@ -8,10 +8,10 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    main_window.py (entry)                        │
+│                    main_window.py (entry)                       │
 │  PyQt6 QMainWindow + drag-drop + central area                   │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │  Toolbar: open, play/pause, palette, mode, FFT, scale,   │  │
+│  │  Toolbar: open, play/pause, palette, mode, FFT, scale,    │  │
 │  │           lang toggle, save PNG                           │  │
 │  │  ┌─────────────────────────────────────────────────────┐  │  │
 │  │  │  WaveformWidget (aligned with spectrogram)          │  │  │
@@ -26,9 +26,9 @@
 │  │  │  MetadataPanel (right sidebar)                      │  │  │
 │  │  └─────────────────────────────────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────────────┘  │
-│                                                             │  │
-│  PlaybackEngine (sounddevice OutputStream)                     │  │
-│  — audio playback with slider sync                             │  │
+│                                                              │  │
+│  PlaybackEngine (sounddevice OutputStream)                   │  │
+│  — audio playback with slider sync                           │  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -40,12 +40,12 @@
 
 `analyzer/core.py` 已拆分为四个模块：
 
-| 模块 | 职责 |
-|------|------|
-| `analyzer/_state.py` | FFTW wisdom 管理、STFT 缓存 (LRU maxsize=8, key 含 hop_length)、`_max_reduce_with_carry` |
-| `analyzer/spectrum.py` | `_SpectrumMixin` — STFT、多分辨率、相位重分配、mel、MFCC、流式渲染 |
-| `analyzer/quality.py` | `_QualityMixin` — 削波、过采样检测、DR、LUFS、true peak |
-| `analyzer/core.py` | `AudioAnalyzer` 门面类，继承两个 mixin，保留 load/waveform/info |
+| 模块                     | 职责                                                                                |
+| ---------------------- | --------------------------------------------------------------------------------- |
+| `analyzer/_state.py`   | FFTW wisdom 管理、STFT 缓存 (LRU maxsize=8, key 含 hop_length)、`_max_reduce_with_carry` |
+| `analyzer/spectrum.py` | `_SpectrumMixin` — STFT、多分辨率、相位重分配、mel、MFCC、流式渲染                                  |
+| `analyzer/quality.py`  | `_QualityMixin` — 削波、过采样检测、DR、LUFS、true peak                                      |
+| `analyzer/core.py`     | `AudioAnalyzer` 门面类，继承两个 mixin，保留 load/waveform/info                              |
 
 所有外部导入 `from analyzer.core import AudioAnalyzer` 无需改动。
 
@@ -63,6 +63,7 @@
 ### 2.4 音频分析
 
 #### AudioAnalyzer 对象模型
+
 ```python
 class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
     filepath: Path
@@ -93,8 +94,10 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
 ### 2.5 配色方案 — `analyzer/palette.py`
 
 #### 架构
+
 - `palette.py` 是唯一的配色数据源（零 Qt 依赖，numpy + matplotlib）
 - 所有曲线参数集中在两个常量：
+  
   ```python
   SPECTRA_CURVE = {"power": 0.5, "lo": 0.15, "span": 0.70}
   LINEAR_CURVE  = {"power": 1.0, "lo": 0.0,  "span": 1.0}
@@ -102,20 +105,25 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
 - `get_curve_params(name)` 返回对应 dict，`set_palette()` 零硬编码
 
 #### 渲染逻辑（`spectrogram.frag`）
+
 shader 对所有配色统一执行：
+
 ```glsl
 t = pow(t_raw, u_curve_power);
 t = clamp((t - u_curve_lo) / u_curve_span, 0.0, 1.0);
 fragColor = texture(u_colormap, vec2(t, 0.5));
 ```
+
 - spectra 配色：power=0.5, lo=0.15, span=0.70（底噪截断 + 提亮）
 - 标准配色：power=1.0, lo=0.0, span=1.0（恒等变换，完全线性）
 
 #### 配色列表
+
 - **spectra**：自定义色板 + 专属曲线，默认配色
 - **inferno / viridis / plasma / magma / hot / coolwarm / seismic / turbo / jet**：matplotlib 标准 LUT，线性映射，显示效果由 matplotlib 原版决定
 
 #### LUT 构建
+
 - `build_lut_np(palette_name)` — 返回 shape=(256, 4) uint8 RGBA LUT
 - `is_spectra(palette_name)` — 判断是否使用自定义亮度曲线
 - `get_curve_params(palette_name)` — 返回 `{"power", "lo", "span"}` dict
@@ -123,9 +131,11 @@ fragColor = texture(u_colormap, vec2(t, 0.5));
 - dB 范围：-120 到 0 dB
 
 #### 调参方式
+
 只改 `palette.py` 中的 `SPECTRA_CURVE`，不涉及任何其他文件。
 
 #### 标准配色保真度
+
 - 标准配色 LUT 从 `_STOPS_TABLE` 中的硬编码色标线性插值生成（色标采样自 matplotlib 原版关键点）
 - LUT alpha 统一为 255（shader 无 blending，alpha 通道不参与渲染，仅占位）
 - 零外部依赖，打包时无需包含 matplotlib
@@ -133,6 +143,7 @@ fragColor = texture(u_colormap, vec2(t, 0.5));
 ### 2.6 渲染器 — `ui/spectrogram_widget.py`
 
 #### SpectrogramGLWidget (OpenGL)
+
 - GPU-accelerated via `QOpenGLWidget`
 - dB 矩阵上传为 `GL_R32F` 2D 纹理
 - GLSL fragment shader 做 y 轴映射 + colormap LUT 查询
@@ -146,11 +157,13 @@ fragColor = texture(u_colormap, vec2(t, 0.5));
 - **亮度曲线**：`set_palette()` 调用 `get_curve_params(name)` 获取参数，通过 uniform 传入 shader（详见 2.5）
 
 #### 频率轴模式
+
 - `u_scale_mode` uniform：0=linear, 1=log, 2=mel, 3=bark
 - mel 映射：`mel = 2595 * log10(1 + f/700)`
 - bark 映射：Zwicker & Fastl 心理声学模型，Newton-Raphson 4 次迭代
 
 #### 坐标轴组件
+
 - `_YAxisWidget` — 频率轴（左），支持 `view_f0/view_f1` 参数
 - `_XAxisWidget` — 时间轴（下），支持 `view_t0/view_t1` 参数
 - `_ColorBarWidget` — dB 色条（右），渐变条宽度 7px
@@ -206,18 +219,22 @@ MainWindow (QMainWindow)
 ### 关键 UI 设计模式
 
 **i18n 系统**
+
 - `lang.t("中文", "English")` 统一翻译入口
 - `on_lang_change(callback)` 注册回调，绑定方法用 `weakref.WeakMethod` 自动管理生命周期
 - `toggle_lang()` 自动清理失效弱引用；返回 `unsubscribe()` 函数防泄漏
 
 **样式系统 (`ui.styles`)**
+
 - 全局 CSS token：`BG_BASE`, `BG_SURFACE`, `TEXT_PRI`, `ACCENT` 等
 - 深色主题一致性
 
 **safe_slot 装饰器**
+
 - 所有 Qt signal-slot 主线程回调使用 `@safe_slot` 装饰器
 
 **MetadataPanel 语言切换**
+
 - 存储 `_section_labels`、`_info_rows`、`_tag_rows`、`_analysis_rows` widget 引用列表
 - `_retranslate_with_data` 直接遍历引用列表，无需遍历布局树
 
@@ -282,12 +299,17 @@ analyzer/core.py
 ## 8. 扩展点
 
 1. **新格式支持** — 扩展 `SUPPORTED_EXTENSIONS` + PyAV
+
 2. **新配色方案** — 在 `PALETTE` 加条目，标准配色用 `matplotlib.cm` 导出；自定义配色需在 `SPECTRA_CURVE` 或新建 curve 常量中定义曲线参数
+
 3. **新分析指标** — 在 `_QualityMixin.analyze_quality()` 添加
+
 4. **多语言扩展** — `lang.t()` 或 gettext
+
 5. **TODO: metadata 中文键名改造** — `analyzer/metadata.py` 的 `_MAPS` 用中文字符串作字典键（`"标题"`、`"艺术家"` 等），`core.py` 的 `_TAG_TR` 做翻译中转。改为英文常量键名（`"title"`、`"artist"`）+ UI 层翻译，可消除 `batch.py` 中的硬编码中文键、补全 `_TAG_TR` 缺失条目（`发行商`、`调性`、`编码设备` 等）。影响范围：`metadata.py`、`core.py`、`batch.py`、`metadata_panel.py`、`test_analyzer.py`
 
 6. **TODO: 声谱渲染亮度与配色优化** — 当前问题：
+   
    - **感知均匀配色（viridis/magma/inferno 等）整体亮度低**：这些配色有 40-60% 暗区，线性映射下大部分能量集中在 -60~-30 dB 范围会显示为暗色
    - **spectra 配色已有亮度曲线**（`SPECTRA_CURVE`），标准配色使用线性映射
    - **可能的解决方案**：收窄 dB 范围（-100 或 -90）减少暗区覆盖、研究 Spek 的具体配色实现
@@ -297,3 +319,19 @@ analyzer/core.py
 
 > 最后更新: 2026-06-16 (配色方案系统重构 + 削波/高频检测算法重写：多声道削波、位深感知、Welch PSD、多因子置信度)
 > 基于文件: main.py, ui/main_window.py, analyzer/core.py, analyzer/_state.py, analyzer/spectrum.py, analyzer/quality.py, analyzer/load.py, analyzer/metadata.py, analyzer/batch.py, analyzer/palette.py, ui/spectrogram_widget.py, ui/metadata_panel.py, ui/waveform_widget.py, ui/playback_engine.py, ui/batch_dialog.py, ui/styles.py, ui/shaders/spectrogram.vert, ui/shaders/spectrogram.frag, lang.py, spectra.spec
+
+---
+
+## Agent skills
+
+### Issue tracker
+
+Issues 与 spec 存于 GitHub Issues，用 `gh` CLI 操作。见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+五个标准角色使用默认标签：`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`。见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+Single-context：根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.md`。
