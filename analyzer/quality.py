@@ -165,17 +165,24 @@ class _QualityMixin:
     _SLOPE_CUTOFF_MIN  = -25.0   # dB/octave — artificial cutoff threshold
 
     def _detect_high_freq_cutoff(self, audio: np.ndarray, sr: int) -> dict:
-        """Detect spectral cutoff from upsampling or low-pass filtering.
+        """Detect where the sustained content bandwidth ends (high-freq cutoff).
 
-        Algorithm:
-          1. Welch PSD — deterministic, no random segments.
-          2. Noise floor = P5 of full spectrum; signal ref = P90 of 2–12 kHz band.
-          3. Walk high→low to find where PSD rises above noise floor by >6 dB.
-          4. Spectral slope (dB/oct) on upper 1/3 band.
-          5. Gibbs ringing detection near cutoff candidate.
-          6. Multi-factor confidence = 0.4×contrast + 0.35×slope + 0.25×gibbs.
+        ok=False means the content's bandwidth ceiling lies below Nyquist. This
+        reports a FACT about the spectrum and does NOT distinguish an artificial
+        low-pass filter from naturally bass-heavy / band-limited content — both
+        present as "content stops, then a noise floor". See spec F3.
+
+        Method:
+          1. Welch PSD (deterministic).
+          2. Median-smooth the PSD (~250 Hz) to suppress single-bin estimation
+             spikes — the main fix; without it the high→low walk below stops at a
+             random floor-region spike and reports a near-Nyquist cutoff.
+          3. Walk high→low with hysteresis (K consecutive smoothed bins above the
+             noise floor + 6 dB) to locate the edge robustly.
+          4. confidence / slope_dboct / gibbs_detected are informational; ok is
+             driven by the (now-robust) edge location.
         """
-        from scipy.signal import welch
+        from scipy.signal import welch, medfilt
 
         nyq = sr / 2
 
@@ -184,72 +191,72 @@ class _QualityMixin:
         psd_db = 10 * np.log10(psd + 1e-12)
 
         if np.max(psd_db) < -110:
-            return {"ok": True, "cutoff_hz": nyq, "confidence": 0.0,
-                    "slope_dboct": 0.0, "gibbs_detected": False,
-                    "method": "welch+multifactor"}
+            return {"ok": True, "cutoff_hz": nyq, "nyq_hz": nyq,
+                    "confidence": 0.0, "slope_dboct": 0.0,
+                    "gibbs_detected": False, "method": "welch+multifactor"}
 
-        # ── Step 2: Noise floor & signal reference ──
+        # ── Step 2: Noise floor & global signal reference (contrast) ──
         noise_floor_db = float(np.percentile(psd_db, 5))
-
         ref_mask = (freqs >= 2000) & (freqs <= 12000)
-        if ref_mask.any():
-            signal_ref_db = float(np.percentile(psd_db[ref_mask], 90))
-        else:
-            signal_ref_db = float(np.max(psd_db))
-
+        signal_ref_db = (float(np.percentile(psd_db[ref_mask], 90)) if ref_mask.any()
+                         else float(np.max(psd_db)))
         contrast_db = signal_ref_db - noise_floor_db
         contrast_score = float(np.clip((contrast_db - 6) / 34, 0.0, 1.0))
 
-        # ── Step 3: Find cutoff — walk high→low ──
-        SHELF_THRESHOLD_DB = 6.0
+        # ── Step 3: Robust edge — median-smooth PSD + hysteresis walk high→low ──
+        bin_hz = sr / (len(freqs) - 1)
+        k = max(3, int(round(250.0 / bin_hz))) | 1          # ~250 Hz median window
+        psd_s = medfilt(psd_db, kernel_size=k)
+
+        THR = 6.0
+        K = max(3, int(round(150.0 / bin_hz)))              # ~150 Hz sustained run
+        above = psd_s > (noise_floor_db + THR)
         cutoff_hz = nyq
-        for i in range(len(psd_db) - 1, -1, -1):
-            if psd_db[i] > noise_floor_db + SHELF_THRESHOLD_DB:
-                if i < len(freqs) - 1:
-                    cutoff_hz = float(freqs[i + 1])
-                else:
-                    cutoff_hz = nyq
-                break
+        run = 0
+        for i in range(len(above) - 1, -1, -1):
+            if above[i]:
+                run += 1
+                if run >= K:
+                    cutoff_hz = float(freqs[min(i + 1, len(freqs) - 1)])
+                    break
+            else:
+                run = 0
 
-        # ── Step 4: Spectral slope on upper 1/3 band ──
-        slope_dboct = 0.0
-        upper_mask = (freqs >= sr / 6) & (freqs > 0)
-        if upper_mask.sum() >= 10:
-            x = np.log2(freqs[upper_mask])
-            y = psd_db[upper_mask]
-            slope_dboct = float(np.polyfit(x, y, 1)[0])
-
+        # ── Step 4: Local slope at the detected edge (±~1 octave) ──
+        if cutoff_hz < nyq * 0.98:
+            lo = max(20.0, cutoff_hz * 0.6)
+            hi = min(nyq, cutoff_hz * 1.7)
+            m = (freqs >= lo) & (freqs <= hi)
+        else:
+            m = (freqs >= sr / 6) & (freqs > 0)
+        slope_dboct = float(np.polyfit(np.log2(freqs[m]), psd_db[m], 1)[0]) if m.sum() >= 8 else 0.0
         slope_score = float(np.clip(
             (-slope_dboct - (-self._SLOPE_NATURAL_MAX))
             / (-self._SLOPE_CUTOFF_MIN - (-self._SLOPE_NATURAL_MAX)),
             0.0, 1.0,
         ))
 
-        # ── Step 5: Gibbs ringing detection ──
+        # ── Step 5: Gibbs ringing near the edge (informational) ──
         gibbs_detected = False
         if cutoff_hz < nyq * 0.85:
-            lo = cutoff_hz * 0.90
-            hi = cutoff_hz * 1.10
+            lo, hi = cutoff_hz * 0.90, cutoff_hz * 1.10
             window_mask = (freqs >= lo) & (freqs <= hi)
             if window_mask.sum() >= 3:
                 window_db = psd_db[window_mask]
                 trend = np.linspace(window_db[0], window_db[-1], len(window_db))
-                above_trend = window_db - trend
-                if float(above_trend.max()) > 3.0:
-                    gibbs_detected = True
+                gibbs_detected = float((window_db - trend).max()) > 3.0
         gibbs_score = 1.0 if gibbs_detected else 0.0
 
-        # ── Step 6: Multi-factor confidence ──
+        # ── Step 6: confidence (informational) + decision ──
         confidence = (
             0.40 * contrast_score
             + 0.35 * slope_score
             + 0.25 * gibbs_score
         )
 
-        # ── Decision ──
-        cutoff_significant = cutoff_hz < nyq * 0.85
-        cutoff_confident = confidence > 0.3
-        is_cutoff = cutoff_significant and cutoff_confident
+        # ok is driven by the robust edge location: content clearly stops more
+        # than 15% below Nyquist → band-limited (a fact, not a defect judgement).
+        is_cutoff = cutoff_hz < nyq * 0.85
 
         return {
             "ok": not is_cutoff,

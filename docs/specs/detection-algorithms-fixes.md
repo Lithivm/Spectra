@@ -110,6 +110,22 @@ bass-only 80-5k        -> ok=False cutoff=17666  （ok 合理；cutoff 值错，
 
 **涉及文件**：`analyzer/quality.py`（`_detect_high_freq_cutoff`）。
 
+**✅ 已实现（M2）**：
+- **稳健化边缘定位**：PSD 经 `scipy.signal.medfilt` 中值平滑（~250 Hz 窗口，奇数核）消除单 bin 估计尖峰；高→低扫描加滞回——连续 K 个（~150 Hz）平滑后 bin 高于 `floor+6 dB` 才认定越过边缘。`cutoff_hz` 由此落在真实频带边界。
+- **局部陡度**：slope 改在检测到的边缘 ±~1 八度局部测量（替代固定上 1/3 ≥8kHz），confidence/slope/gibbs 保留为信息字段。
+- **决策简化 + 语义如实**：`ok` 由稳健后的边缘位置驱动——`cutoff_hz < 0.85·nyq`（内容明确在 Nyquist 下方停止）即判 band-limited；docstring 如实说明它不区分"人工滤波"与"天然低频内容"。
+- **before→after**（dur=1.0、内容+−18 dB 全带噪声底，跨 12 seed 取极值；旧代码 cutoff 在 5.8k–23.9k 乱跳且多数误判 ok=True）：
+
+| 信号 | 旧 cutoff / ok | 新 cutoff / ok |
+| --- | --- | --- |
+| full-band | 24000 / True | 24000 / **True** |
+| brickwall@15k | ~15064 / False | 14936–14941 / **False** |
+| phone@3.4k | 5836–23877 / 多 True（漏报） | **3340（恒定）** / **False** |
+| bass@5k | ~19752 / False | **4939–4945** / **False** |
+| gentle LP@15k(4) | 22477 / True | 22477 / **True**（温和滚降不判） |
+
+- **测试**：`TestHighFreqCutoff`（5 例，内容+噪声底、dur=1.0、固定 seed）。RED 验证：旧代码上 `test_phone_band_3k4`/`test_bass_only_5k` 失败（bass cutoff=19752 vs ~5000），新代码全绿。
+
 **测试与验收**（cutoff 值贴近真实边缘；ok 反映"是否 band-limited below Nyquist"，基本不变）：
 ```
 full-band noise        -> ok=True,  cutoff≈nyq

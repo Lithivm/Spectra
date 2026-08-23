@@ -155,6 +155,70 @@ class TestDynamicRange:
         assert q["dynamic_range"]["dr"] == q["loudness"]["lra_lu"]
 
 
+class TestHighFreqCutoff:
+    """F3: cutoff_hz must land on the true content edge — not a floor-region
+    PSD spike. ok=False means 'content bandwidth ceiling below Nyquist'.
+
+    Signals are band-limited broadband content (FFT-masked → exact edge at fc)
+    over a low full-band noise floor, kept SHORT (1 s) so the Welch PSD has few
+    averages and high bin-to-bin variance — the condition under which the pre-fix
+    high→low walk stopped at a random floor spike (cutoff 5.8k–23.9k instead of
+    fc). Fixed seeds keep every case deterministic.
+    """
+
+    @staticmethod
+    def _content_floor(fc=None, floor_db=-18.0, sr=48000, dur=1.0, seed=0):
+        rng = np.random.default_rng(seed)
+        n = int(sr * dur)
+        x = rng.standard_normal(n)
+        X = np.fft.rfft(x)
+        if fc is not None:
+            f = np.fft.rfftfreq(n, 1.0 / sr)
+            X[f > fc] = 0
+        content = np.fft.irfft(X, n=n)
+        floor = rng.standard_normal(n) * 10 ** (floor_db / 20)
+        return (content + floor).astype(np.float32)
+
+    @staticmethod
+    def _gentle_lp(fc=15000, order=4, sr=48000, dur=1.0, seed=0):
+        import scipy.signal as sig
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal(int(sr * dur))
+        b, a = sig.butter(order, fc / (sr / 2), "low")
+        return sig.lfilter(b, a, x).astype(np.float32)
+
+    def _run(self, x):
+        a = _make_analyzer_with_audio(np.asarray(x, dtype=np.float32))
+        return a._detect_high_freq_cutoff(a.data[0], a.sample_rate)
+
+    def test_full_band_ok(self):
+        r = self._run(self._content_floor(fc=None))  # white noise → flat to Nyquist
+        assert r["ok"] is True
+        assert r["cutoff_hz"] >= 0.85 * 24000
+
+    def test_sharp_brickwall_15k(self):
+        r = self._run(self._content_floor(fc=15000))
+        assert r["ok"] is False
+        assert abs(r["cutoff_hz"] - 15000) <= 1800
+
+    def test_phone_band_3k4(self):
+        # pre-fix: ~15768 (floor-region spike); must land near the true 3.4k edge.
+        r = self._run(self._content_floor(fc=3400))
+        assert r["ok"] is False
+        assert abs(r["cutoff_hz"] - 3400) <= 900
+
+    def test_bass_only_5k(self):
+        # pre-fix: ~17666 (floor-region spike); must land near the true 5k edge.
+        r = self._run(self._content_floor(fc=5000))
+        assert r["ok"] is False
+        assert abs(r["cutoff_hz"] - 5000) <= 1200
+
+    def test_gentle_rolloff_not_flagged(self):
+        # A gradual 4th-order rolloff is not an artificial hard edge.
+        r = self._run(self._gentle_lp(fc=15000, order=4))
+        assert r["ok"] is True
+
+
 class TestZeroCrossingRate:
     def test_sine_zcr(self):
         sr = 48000
