@@ -189,6 +189,10 @@ class _QualityMixin:
         from scipy.signal import welch, medfilt
 
         nyq = sr / 2
+        if len(audio) < 8192:
+            return {"ok": True, "cutoff_hz": nyq, "nyq_hz": nyq,
+                    "confidence": 0.0, "slope_dboct": 0.0,
+                    "gibbs_detected": False, "method": "welch+multifactor"}
 
         # ── Step 1: Welch PSD ──
         freqs, psd = welch(audio, fs=sr, nperseg=8192, noverlap=4096, window='hann')
@@ -326,6 +330,8 @@ class _QualityMixin:
         if audio_st.ndim == 1:
             audio_st = audio_st[:, np.newaxis]
         TARGET_SR = 12000
+        if len(audio_st) < 64:
+            return []
         if sr > TARGET_SR * 1.5:
             from scipy.signal import decimate
             factor = max(1, sr // TARGET_SR)
@@ -365,7 +371,7 @@ class _QualityMixin:
             audio_st = audio_st[:, np.newaxis]
 
         TARGET_SR = 12000
-        if sr > TARGET_SR * 1.5:
+        if sr > TARGET_SR * 1.5 and len(audio_st) >= 64:
             from scipy.signal import decimate
             factor = max(1, sr // TARGET_SR)
             meter_sr = sr // factor
@@ -377,7 +383,11 @@ class _QualityMixin:
         if st_vals is None:
             st_vals = self._short_term_loudness_values(audio_st, sr, cancel_check)
         meter = pyln.Meter(meter_sr)
-        integrated = float(meter.integrated_loudness(audio_meter))
+        min_meter_samples = int(meter.block_size * meter_sr)
+        integrated = (
+            float(meter.integrated_loudness(audio_meter))
+            if len(audio_meter) >= min_meter_samples else -math.inf
+        )
         short_term = max((v for v in st_vals if np.isfinite(v)), default=integrated)
 
         tp = true_peak_val if true_peak_val is not None else self._true_peak(audio_st, sr)

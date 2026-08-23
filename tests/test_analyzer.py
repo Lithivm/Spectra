@@ -153,6 +153,12 @@ class TestDynamicRange:
         assert a._short_term_loudness_values(a.data.T, a.sample_rate) == []
         assert a._measure_dynamic_range([]) == {"dr": 0.0}
 
+    def test_single_sample_quality_analysis_is_safe(self):
+        a = _make_analyzer_with_audio(np.zeros(1, dtype=np.float32))
+        result = a.analyze_quality()
+        assert result["dynamic_range"] == {"dr": 0.0}
+        assert result["loudness"]["integrated_lufs"] == -np.inf
+
     def test_dr_equals_lra(self):
         # F4 (Option A): DR and LRA are the same R128 measurement.
         a = _make_analyzer_with_audio(self._alternating_loudness().astype(np.float32))
