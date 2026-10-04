@@ -510,6 +510,8 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._curve_lo = cp["lo"]
         self._curve_span = cp["span"]
         new_np = np.ascontiguousarray(build_lut_np(name)[:, :4])
+        # 平底同步：floor 跟 LUT 走（首行 RGB）
+        self._lut_floor = tuple(int(v) / 255.0 for v in new_np[0][:3])
         if self._gl_program is None or self._lut_tex_id is None:
             # GL 未初始化 — 走首次上传路径
             self._lut_np = new_np
@@ -656,6 +658,8 @@ class SpectrogramGLWidget(QOpenGLWidget):
     def _rebuild_lut(self) -> None:
         lut_np = build_lut_np(self._palette_name)
         self._lut_np = np.ascontiguousarray(lut_np[:, :4])
+        # 平底同步：floor = LUT 首行 RGB（spectra → BG_CANVAS；标准配色 → 各自信色底）
+        self._lut_floor = tuple(int(v) / 255.0 for v in lut_np[0][:3])
 
     # ── OpenGL lifecycle ────────────────────────────────────────────
 
@@ -745,6 +749,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._u_curve_power  = glGetUniformLocation(self._gl_program, "u_curve_power")
         self._u_curve_lo     = glGetUniformLocation(self._gl_program, "u_curve_lo")
         self._u_curve_span   = glGetUniformLocation(self._gl_program, "u_curve_span")
+        self._u_floor        = glGetUniformLocation(self._gl_program, "u_floor")
         self._u_colormap2    = glGetUniformLocation(self._gl_program, "u_colormap2")
         self._u_lut_mix      = glGetUniformLocation(self._gl_program, "u_lut_mix")
 
@@ -1129,6 +1134,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
         glUniform1f(self._u_curve_power, self._curve_power)
         glUniform1f(self._u_curve_lo, self._curve_lo)
         glUniform1f(self._u_curve_span, self._curve_span)
+        glUniform3f(self._u_floor, *self._lut_floor)
 
         glBindVertexArray(self._vao)
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)

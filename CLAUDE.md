@@ -132,6 +132,7 @@ fragColor = mix(cA, cB, u_lut_mix);   // LUT 交叉淡化
 - `get_curve_params(palette_name)` — 返回 `{"power", "lo", "span"}` dict
 - 所有配色通过 `_build_lut_from_stops` 从硬编码色标（`_STOPS_TABLE`）线性插值，零外部依赖
 - dB 范围：-120 到 0 dB
+- **spectra 平底**：`_STOPS_TABLE["spectra"]` 首点 = `BG_CANVAS`（#1a1d1f），与 styles token 同步；floor 由 `_rebuild_lut`/`set_palette` 取 LUT 首行 RGB，经 `u_floor` uniform 进 shader
 
 #### 调参方式
 
@@ -160,6 +161,7 @@ fragColor = mix(cA, cB, u_lut_mix);   // LUT 交叉淡化
 - **HiDPI 支持**：`resizeGL` 使用 `devicePixelRatio` 设置物理像素 viewport
 - **LUT 缓存**：`build_lut` / `build_lut_np` 按配色名缓存结果，避免重复计算
 - **亮度曲线**：`set_palette()` 调用 `get_curve_params(name)` 获取参数，通过 uniform 传入 shader（详见 2.5）
+- **画布平底**：`u_floor` uniform（= LUT 首行 RGB = styles.BG_CANVAS）。流式加载的硬门限与软边界过渡都 fade 到 floor 而非纯黑，未填充区与画布背景一致
 
 #### 频率轴模式
 
@@ -202,6 +204,8 @@ fragColor = mix(cA, cB, u_lut_mix);   // LUT 交叉淡化
 - 窗口控制按钮（—/□/×）在 toolbar 尾部；Win11 圆角经 ctypes `DwmSetWindowAttribute`（showEvent，失败静默回退）
 - 快捷键：Ctrl+O 打开、Space 播放/暂停（焦点在按钮/下拉框时跳过）、Ctrl+S 保存 PNG；tooltip 带快捷键提示
 - `ui/icons.py`：内联 SVG 模板 + `render_icon(name, size, color)`（QSvgRenderer→QPixmap→QIcon），零资源文件依赖
+- **Logo**：toolbar 品牌区前加 24px `logo` 图标（声谱条小图标，inline SVG 模板，复用 render_icon）
+- **cursor label**：透明底（`background: transparent`）+ 保留边框，浮在声谱图上方不遮挡画布
 
 ---
 
@@ -210,7 +214,7 @@ fragColor = mix(cA, cB, u_lut_mix);   // LUT 交叉淡化
 ```
 MainWindow (QMainWindow)
 ├── toolbar (_TitleBarCard, 拖拽/双击最大化)
-│   ├── brand_label "Spectra"
+│   ├── logo (24px SVG) + brand_label "Spectra"
 │   ├── open_btn
 │   ├── play_label + play_btn (SVG icon toggle)
 │   ├── palette_label + palette_combo
@@ -222,9 +226,9 @@ MainWindow (QMainWindow)
 │   └── min_btn / max_btn / close_btn (无边框窗口控制)
 ├── central_widget
 │   ├── left
-│   │   ├── wave_card (margins 36/0/36/0 — aligned with spectrogram)
+│   │   ├── wave_card (内衬 well: 4px BG_CANVAS, 无边框)
 │   │   │   └── WaveformWidget
-│   │   └── spec_card
+│   │   └── spec_card (内衬 well: 4px BG_CANVAS, 无边框)
 │   │       └── QGridLayout
 │   │           ├── filename_widget (row 0, col 0-2)
 │   │           ├── YAxisWidget (row 1, col 0, width=36)
@@ -342,7 +346,8 @@ analyzer/core.py
 
 ---
 
-> 最后更新: 2026-07-14 (UI 现代化重构 Phase 0–4：design token 统一、无边框窗口+SVG图标+快捷键、动画系统 FloatAnim（缩放缓动/LUT交叉淡化/浮层淡入淡出/滑块hover/元数据错峰）)
+> 最后更新: 2026-10-05 (视觉升级 Round 4：spectra 平底黑→BG_CANVAS(#1a1d1f) + `u_floor` uniform（硬/软门限 fade 到 floor 而非纯黑）、wave_card/spec_card 内衬 well(4px BG_CANVAS,无边框)、toolbar logo(声谱条 SVG)、cursor label 透明底、open_btn 显式样式不依赖全局)
+> 上一更新: 2026-07-14 (UI 现代化重构 Phase 0–4：design token 统一、无边框窗口+SVG图标+快捷键、动画系统 FloatAnim（缩放缓动/LUT交叉淡化/浮层淡入淡出/滑块hover/元数据错峰）)
 > 上一更新: 2026-06-16 (配色方案系统重构 + 削波/高频检测算法重写：多声道削波、位深感知、Welch PSD、多因子置信度)
 > 基于文件: main.py, ui/main_window.py, analyzer/core.py, analyzer/_state.py, analyzer/spectrum.py, analyzer/quality.py, analyzer/load.py, analyzer/metadata.py, analyzer/batch.py, analyzer/palette.py, ui/spectrogram_widget.py, ui/metadata_panel.py, ui/waveform_widget.py, ui/playback_engine.py, ui/batch_dialog.py, ui/styles.py, ui/shaders/spectrogram.vert, ui/shaders/spectrogram.frag, lang.py, spectra.spec
 

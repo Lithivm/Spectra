@@ -36,6 +36,14 @@ _ICONS: dict[str, str] = {
         '<path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/>'
         '</svg>'
     ),
+    "logo": (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+        '<rect x="2"    y="8"   width="3" height="8"  rx="1.5" fill="{c}"/>'
+        '<rect x="7.7"  y="5"   width="3" height="14" rx="1.5" fill="{c}"/>'
+        '<rect x="13.3" y="7"   width="3" height="10" rx="1.5" fill="{c}"/>'
+        '<rect x="19"   y="6"   width="3" height="12" rx="1.5" fill="{c}"/>'
+        '</svg>'
+    ),
 }
 
 

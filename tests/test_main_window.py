@@ -160,3 +160,38 @@ class TestToolbar:
         assert isinstance(mw._mode_combo, QComboBox)
         assert isinstance(mw._fft_combo, QComboBox)
         assert isinstance(mw._yscale_combo, QComboBox)
+
+
+class TestVisualUpgrade:
+    """Round-4 visual upgrade: shader floor, LUT flat-floor sync, inset well, logo."""
+
+    def test_shader_compiles(self, app):
+        from ui.spectrogram_widget import SpectrogramGLWidget
+        w = SpectrogramGLWidget()
+        w.show()
+        app.processEvents()
+        w.makeCurrent()
+        try:
+            # initializeGL compiles + links the shader; raises RuntimeError on failure.
+            w.initializeGL()
+        finally:
+            w.doneCurrent()
+
+    def test_spectra_floor_matches_bg_canvas(self, app):
+        from ui.styles import BG_CANVAS
+        from ui.spectrogram_widget import SpectrogramGLWidget
+        w = SpectrogramGLWidget()
+        w.set_palette("spectra")
+        r, g, b = (int(BG_CANVAS[i:i + 2], 16) / 255.0 for i in (1, 3, 5))
+        assert abs(w._lut_floor[0] - r) < 0.01
+        assert abs(w._lut_floor[1] - g) < 0.01
+        assert abs(w._lut_floor[2] - b) < 0.01
+
+    def test_spec_card_inset_well(self, app):
+        from ui.styles import BG_CANVAS
+        mw = _build_main_window(app)
+        assert BG_CANVAS in mw._spec_card.styleSheet()
+
+    def test_logo_label_has_pixmap(self, app):
+        mw = _build_main_window(app)
+        assert mw._logo_label.pixmap() is not None

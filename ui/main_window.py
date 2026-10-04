@@ -37,12 +37,12 @@ from ui.metadata_panel import MetadataPanel
 from ui.spectrogram_widget import SpectrogramGLWidget, _YAxisWidget, _XAxisWidget, _ColorBarWidget
 from ui.waveform_widget import WaveformWidget
 from ui.styles import (
-    BG_BASE, BG_SURFACE, BG_RAISED, BG_WELL,
+    BG_BASE, BG_SURFACE, BG_RAISED, BG_WELL, BG_CANVAS,
     BORDER_SUB, BORDER_MID,
     ACCENT, ACCENT_HOVER, ACCENT_PRESSED, ACCENT_ALT, ACCENT_RED,
     TEXT_PRI, TEXT_SEC, TEXT_DIM,
     FONT_FAMILY, FS_XS, FS_SM, FS_BODY, FS_MD, FS_LG, FS_XL,
-    CORNER_SM, CORNER_MD, CORNER_LG, SIDE,
+    CORNER_SM, CORNER_MD, CORNER_LG, SIDE, CARD_INSET,
 )
 
 BTN_H = 30  # unified toolbar control height
@@ -161,17 +161,27 @@ def _shadow(radius: int = 24, opacity: int = 70) -> QGraphicsDropShadowEffect:
 
 _card_ids = itertools.count()
 
-def _card(radius: int = CORNER_LG) -> QWidget:
+def _card(radius: int = CORNER_LG, inset: int | None = None) -> QWidget:
     name = f"_card_{next(_card_ids)}"
     w = QWidget()
     w.setObjectName(name)
-    w.setStyleSheet(f"""
-        #{name} {{
-            background-color: {BG_SURFACE};
-            border: 1px solid {BORDER_SUB};
-            border-radius: {radius}px;
-        }}
-    """)
+    if inset is not None:
+        # 内衬 well：边框与内容之间垫一圈 BG_CANVAS，内容区像"沉进去"的窗格
+        w.setStyleSheet(f"""
+            #{name} {{
+                background-color: {BG_SURFACE};
+                border: {inset}px solid {BG_CANVAS};
+                border-radius: {radius}px;
+            }}
+        """)
+    else:
+        w.setStyleSheet(f"""
+            #{name} {{
+                background-color: {BG_SURFACE};
+                border: 1px solid {BORDER_SUB};
+                border-radius: {radius}px;
+            }}
+        """)
     return w
 
 
@@ -590,17 +600,19 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(self._make_toolbar())
 
-        # 波形卡片 — left/right margins align with spectrogram (y-axis + colorbar)
-        wave_card = _card()
+        # 波形卡片 — 内衬 well（无边框，与声谱图卡同宽同色）
+        wave_card = _card(inset=CARD_INSET)
         wave_card.setFixedHeight(130)
         wl = QVBoxLayout(wave_card)
-        wl.setContentsMargins(SIDE, 0, SIDE, 0)
+        wl.setContentsMargins(0, 0, 0, 0)
         self._wave = WaveformWidget()
         wl.addWidget(self._wave)
+        self._wave_card = wave_card
         left_layout.addWidget(wave_card)
 
-        # 频谱卡片
-        spec_card = _card()
+        # 频谱卡片 — 内衬 well
+        spec_card = _card(inset=CARD_INSET)
+        self._spec_card = spec_card
         sl = QVBoxLayout(spec_card)
         sl.setContentsMargins(0, 0, 0, 0)
         sl.setSpacing(0)
@@ -681,7 +693,7 @@ class MainWindow(QMainWindow):
         self._cursor_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._cursor_label.setStyleSheet(
             f"color: {TEXT_PRI}; font-size: {FS_BODY}px; font-family: 'Consolas', monospace;"
-            f" background: {BG_RAISED}; border: 1px solid {BORDER_SUB};"
+            f" background: transparent; border: 1px solid {BORDER_SUB};"
             f" border-radius: {CORNER_SM}px; padding: 2px 8px;"
         )
         self._cursor_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -716,11 +728,21 @@ class MainWindow(QMainWindow):
                 border: 1px solid {BORDER_SUB};
                 border-radius: {CORNER_LG}px;
             }}
+            #{name} QPushButton#primary {{
+                background: {BG_BASE}; color: {TEXT_PRI}; border: none;
+            }}
         """)
         card.setFixedHeight(52)
         layout = QHBoxLayout(card)
         layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(12)
+
+        # Logo（声谱条小图标）— 品牌区作为标题栏拖拽区（鼠标事件穿透到 _TitleBarCard）
+        self._logo_label = QLabel()
+        self._logo_label.setPixmap(render_icon("logo", 24).pixmap(24, 24))
+        self._logo_label.setStyleSheet("background: transparent; border: none;")
+        self._logo_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(self._logo_label)
 
         self._brand_label = QLabel("Spectra")
         self._brand_label.setStyleSheet(f"""

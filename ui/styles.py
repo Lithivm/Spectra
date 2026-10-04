@@ -8,6 +8,8 @@ BG_BASE = "#222526"      # window root
 BG_SURFACE = "#303436"  # cards / panels (raised)
 BG_RAISED = "#292d2e"   # hover on surface rows
 BG_WELL = "#1a1d1f"     # sunken wells: progress tracks, code areas, icon buttons
+BG_CANVAS = "#1a1d1f"   # spectrogram canvas == LUT flat floor (must stay in sync)
+CARD_INSET = 4          # inset well between card border and content
 
 # ── Borders ───────────────────────────────────────────────────────────────────
 BORDER_SUB = "#2e3133"  # card outlines

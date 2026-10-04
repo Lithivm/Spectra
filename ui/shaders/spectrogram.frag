@@ -22,6 +22,7 @@ uniform float u_fview_max;  // view window: max freq as fraction [0,1]
 uniform float u_curve_power; // brightness curve exponent (1.0 = linear)
 uniform float u_curve_lo;    // lower clamp bound after pow (spectra: 0.15)
 uniform float u_curve_span;  // clamp span after pow (spectra: 0.70)
+uniform vec3 u_floor;        // canvas background (== LUT flat floor, from styles.BG_CANVAS)
 
 void main() {
     // Map UV through view window
@@ -33,7 +34,7 @@ void main() {
     float col_f = u * float(u_total_cols);
     float edge_dist = float(u_filled_cols) - col_f;
     if (edge_dist <= 0.0) {
-        fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        fragColor = vec4(u_floor, 1.0);
         return;
     }
 
@@ -88,7 +89,7 @@ void main() {
     vec4 cB = texture(u_colormap2, vec2(t, 0.5));
     fragColor = mix(cA, cB, u_lut_mix);
 
-    // Soft fade at the fill boundary — 2-column transition zone
+    // Soft fade at the fill boundary — 2-column transition zone (toward canvas floor)
     float alpha = min(edge_dist / 2.0, 1.0);
-    fragColor.rgb *= alpha;
+    fragColor.rgb = mix(u_floor, fragColor.rgb, alpha);
 }
