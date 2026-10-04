@@ -17,6 +17,7 @@ from PyQt6.QtGui import (
     QKeySequence, QShortcut,
 )
 
+from ui.anim import FloatAnim
 from ui.icons import render_icon
 from PyQt6.QtWidgets import (
     QFileDialog, QHBoxLayout, QVBoxLayout,
@@ -247,6 +248,8 @@ class _PlaybackSlider(QWidget):
         self._dragging = False
         self.setMouseTracking(True)
         self._hover = False
+        self._hover_grow = 0.0  # 0..1 handle grow animation
+        self._grow_anim: FloatAnim | None = None
         self._view_t0 = 0.0   # spectrogram zoom range (fraction of duration)
         self._view_t1 = 1.0
 
@@ -272,15 +275,28 @@ class _PlaybackSlider(QWidget):
 
     def enterEvent(self, event) -> None:
         self._hover = True
-        self.update()
+        self._sync_grow()
 
     def leaveEvent(self, event) -> None:
         self._hover = False
-        self.update()
+        self._sync_grow()
+
+    def _sync_grow(self) -> None:
+        """Handle hover/drag grow 0→1 (120ms)."""
+        target = 1.0 if (self._hover or self._dragging) else 0.0
+
+        def tick(v):
+            self._hover_grow = v
+            self.update()
+
+        if self._grow_anim is None:
+            self._grow_anim = FloatAnim(120, tick)
+        self._grow_anim.start_from(self._hover_grow, target)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = True
+            self._sync_grow()
             self._update_from_mouse(event.position().x())
             self.sliderPressed.emit()
 
@@ -291,6 +307,7 @@ class _PlaybackSlider(QWidget):
     def mouseReleaseEvent(self, event) -> None:
         if self._dragging and event.button() == Qt.MouseButton.LeftButton:
             self._dragging = False
+            self._sync_grow()
             self._update_from_mouse(event.position().x())
             self.sliderReleased.emit()
 
@@ -339,7 +356,7 @@ class _PlaybackSlider(QWidget):
         # Handle
         if self._maximum > 0:
             handle_x = pad + int(w * self._value / self._maximum)
-            handle_r = 6 if self._hover or self._dragging else 4
+            handle_r = 4 + 2 * self._hover_grow
             painter.setBrush(QColor(ACCENT))
             painter.drawEllipse(QPointF(handle_x, cy), handle_r, handle_r)
 

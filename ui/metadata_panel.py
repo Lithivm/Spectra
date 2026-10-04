@@ -7,11 +7,13 @@ import time
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QScrollArea,
+    QGraphicsOpacityEffect,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
 from analyzer.core import AudioAnalyzer, _TAG_TR
 from lang import t, on_lang_change
+from ui.anim import FloatAnim
 
 logger = logging.getLogger(__name__)
 from ui.styles import (
@@ -167,6 +169,9 @@ class MetadataPanel(QWidget):
         self._info_rows: list[_Row] = []
         self._tag_rows: list[_Row] = []
         self._analysis_rows: list[_AnalysisRow] = []
+        # Phase 4: staggered fade-in state
+        self._fade_anims: list[tuple] = []
+        self._fade_gen = 0
         self.setStyleSheet(f"""
             QWidget {{
                 background-color: {BG_SURFACE};
@@ -253,6 +258,7 @@ class MetadataPanel(QWidget):
         self._content_layout.addStretch()
 
     def clear(self) -> None:
+        self._cancel_fades()
         while self._content_layout.count():
             item = self._content_layout.takeAt(0)
             if item.widget():
@@ -322,6 +328,48 @@ class MetadataPanel(QWidget):
         self._indicator.setText("●")
         self._indicator.setStyleSheet(
             f"color: {ACCENT_GRN}; font-size: 20px; background: transparent; border: none;")
+        self._stagger_fade_content()
+
+    def _cancel_fades(self) -> None:
+        """Stop all in-progress fade animations (called when content is cleared)."""
+        self._fade_gen += 1  # invalidate pending delayed starts
+        for anim, _eff, w in self._fade_anims:
+            anim.stop()
+            try:
+                w.setGraphicsEffect(None)
+            except RuntimeError:
+                pass  # C++ object already deleted
+        self._fade_anims.clear()
+
+    def _stagger_fade_content(self) -> None:
+        """Staggered fade-in for new content (25ms interval per row, 140ms per row)."""
+        self._cancel_fades()
+        widgets = []
+        for i in range(self._content_layout.count()):
+            w = self._content_layout.itemAt(i).widget()
+            if w is not None:
+                widgets.append(w)
+        gen = self._fade_gen
+        for i, w in enumerate(widgets):
+            eff = QGraphicsOpacityEffect(w)
+            eff.setOpacity(0.0)
+            w.setGraphicsEffect(eff)
+
+            def tick(v, _eff=eff):
+                _eff.setOpacity(v * 255.0)
+
+            def done(_eff=eff, _w=w):
+                try:
+                    _w.setGraphicsEffect(None)
+                except RuntimeError:
+                    pass
+                self._fade_anims = [a for a in self._fade_anims if a[1] is not _eff]
+
+            anim = FloatAnim(140, tick, done)
+            self._fade_anims.append((anim, eff, w))
+            QTimer.singleShot(
+                i * 25,
+                lambda a=anim, g=gen: a.start_from(0.0, 1.0) if self._fade_gen == g else None)
 
     def load_analysis(self, qa: dict | None) -> None:
         """Fill the ANALYSIS section — called from background thread result."""

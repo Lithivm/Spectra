@@ -111,11 +111,14 @@ shader 对所有配色统一执行：
 ```glsl
 t = pow(t_raw, u_curve_power);
 t = clamp((t - u_curve_lo) / u_curve_span, 0.0, 1.0);
-fragColor = texture(u_colormap, vec2(t, 0.5));
+vec4 cA = texture(u_colormap, vec2(t, 0.5));
+vec4 cB = texture(u_colormap2, vec2(t, 0.5));
+fragColor = mix(cA, cB, u_lut_mix);   // LUT 交叉淡化
 ```
 
 - spectra 配色：power=0.5, lo=0.15, span=0.70（底噪截断 + 提亮）
 - 标准配色：power=1.0, lo=0.0, span=1.0（恒等变换，完全线性）
+- **LUT 交叉淡化**：`u_colormap2` + `u_lut_mix`（0=A，1=B）。换配色时新 LUT 上传纹理 B，动画驱动 `u_lut_mix` 0→1（200ms），完成后写回 A、mix 归零；中途再换则只更新 B 内容并从当前 mix 继续（A 不动 = 淡入起点）
 
 #### 配色列表
 
@@ -151,7 +154,9 @@ fragColor = texture(u_colormap, vec2(t, 0.5));
 - 流式加载：texture 初始化为 `-120.0` dB（噪声底），`GL_NEAREST` 过滤，软边界过渡
 - **视图状态**：`_view_t0/_view_t1`（时间窗口）、`_view_f0/_view_f1`（频率窗口），通过 shader uniform 实现 GPU 端缩放
 - **光标信息**：`setMouseTracking(True)`，`mouseMoveEvent` 发射 `cursor_info(time, freq, dB, px)` 信号
-- **滚轮缩放**：`wheelEvent` 以光标位置为中心缩放时间轴，Shift+滚轮缩放频率轴，双击重置
+- **滚轮缩放**：`wheelEvent` 以光标位置为中心缩放时间轴，Shift+滚轮缩放频率轴，双击重置；缩放/重置均经 `_animate_view_to(start)` 缓动（120ms OutCubic），每帧 `view_changed.emit()` 驱动坐标轴跟随
+- **LUT 交叉淡化**：`set_palette()` 换配色时新 LUT 上传纹理 B，动画驱动 `u_lut_mix` 0→1（200ms）；完成写回 A。GL 未初始化时走立即路径（首次 upload）
+- **加载浮层淡入/淡出**：`show_progress()`/`hide_progress()` 经 `_fade_overlay(target)` 驱动 QGraphicsOpacityEffect（150ms），完成后移除 effect 免常开开销
 - **HiDPI 支持**：`resizeGL` 使用 `devicePixelRatio` 设置物理像素 viewport
 - **LUT 缓存**：`build_lut` / `build_lut_np` 按配色名缓存结果，避免重复计算
 - **亮度曲线**：`set_palette()` 调用 `get_curve_params(name)` 获取参数，通过 uniform 传入 shader（详见 2.5）
@@ -178,10 +183,25 @@ fragColor = texture(u_colormap, vec2(t, 0.5));
 
 ### 2.8 播放进度条 — `_PlaybackSlider`（`ui/main_window.py`）
 
-- 自定义 QWidget，位于声谱图与 X 轴之间（grid row 2, col 1）
-- 轨道 + 进度填充 + 可拖拽圆形滑块
+- 自定义 QWidget，位于声谱图与 X 轴之间（grid row 2, col 0–2 跨三列）
+- 轨道 + 进度填充 + 可拖拽圆形滑块；绘制/鼠标均用 `pad = SIDE` 与声谱图精确对齐
+- hover/拖拽时滑块半径 4→6px 缓动（`_hover_grow`，120ms，`FloatAnim`）
 - 拖拽时实时跳转播放位置
 - 播放时滑块自动跟随，停止时归零
+
+### 2.9 动画系统 — `ui/anim.py`
+
+- `FloatAnim(QVariantAnimation)`：浮点缓动助手（默认 OutCubic），`start_from(v0, v1)` 重启、`updateCurrentValue(value)` → `on_tick`、`finished` → 末帧精确落地后 `on_finish`
+- **复用同一动画对象时必须 `rebind(on_tick=..., on_finish=...)`**：闭包若捕获了局部变量（如新 effect、新的 start 元组），不重绑就会用旧闭包跑
+- `updateCurrentValue` 内 try/except RuntimeError → `stop()`：widget 在动画中途被销毁时安全停表（PyQt6 对已删 C++ 对象的方法调用抛 RuntimeError）
+- 动画对象必须挂在 widget 属性上（GC 安全），时长：缩放 120ms / LUT 淡化 200ms / 浮层 150ms / 滑块 120ms
+
+### 2.10 无边框窗口与图标 — `ui/main_window.py` / `ui/icons.py`
+
+- `FramelessWindowHint` + `_RootWidget`（8px 边缘热区 → `windowHandle().startSystemResize(edges)`）+ `_TitleBarCard`（空白处拖拽移动、双击最大化/还原）
+- 窗口控制按钮（—/□/×）在 toolbar 尾部；Win11 圆角经 ctypes `DwmSetWindowAttribute`（showEvent，失败静默回退）
+- 快捷键：Ctrl+O 打开、Space 播放/暂停（焦点在按钮/下拉框时跳过）、Ctrl+S 保存 PNG；tooltip 带快捷键提示
+- `ui/icons.py`：内联 SVG 模板 + `render_icon(name, size, color)`（QSvgRenderer→QPixmap→QIcon），零资源文件依赖
 
 ---
 
@@ -189,16 +209,17 @@ fragColor = texture(u_colormap, vec2(t, 0.5));
 
 ```
 MainWindow (QMainWindow)
-├── toolbar
+├── toolbar (_TitleBarCard, 拖拽/双击最大化)
 │   ├── brand_label "Spectra"
 │   ├── open_btn
-│   ├── play_label + play_btn (▶/‖ toggle)
+│   ├── play_label + play_btn (SVG icon toggle)
 │   ├── palette_label + palette_combo
 │   ├── mode_label + mode_combo
 │   ├── fft_label + fft_combo
 │   ├── yscale_label + yscale_combo
 │   ├── save_btn
-│   └── lang_btn
+│   ├── lang_btn
+│   └── min_btn / max_btn / close_btn (无边框窗口控制)
 ├── central_widget
 │   ├── left
 │   │   ├── wave_card (margins 36/0/36/0 — aligned with spectrogram)
@@ -209,7 +230,7 @@ MainWindow (QMainWindow)
 │   │           ├── YAxisWidget (row 1, col 0, width=36)
 │   │           ├── SpectrogramGLWidget (row 1, col 1, stretch)
 │   │           ├── ColorBarWidget (row 1, col 2, width=36)
-│   │           ├── PlaybackSlider (row 2, col 1, height=20)
+│   │           ├── PlaybackSlider (row 2, col 0-2 span, height=20)
 │   │           └── XAxisWidget (row 3, col 0-2, height=36)
 │   └── right
 │       └── MetadataPanel (width=310)
@@ -260,6 +281,8 @@ main_window.py
   ├── ui/waveform_widget.py (WaveformWidget)
   ├── ui/metadata_panel.py (MetadataPanel)
   ├── ui/playback_engine.py (PlaybackEngine)
+  ├── ui/anim.py (FloatAnim — 动画助手)
+  └── ui/icons.py (render_icon — SVG 图标)
   ├── analyzer/palette.py (PALETTE, build_lut_np, is_spectra, get_curve_params)
   ├── lang.py (t, toggle_lang, on_lang_change)
   └── ui/styles.py (color tokens)
@@ -281,6 +304,7 @@ analyzer/core.py
 - **`console=False`**（生产）+ 文件日志兜底
 - **`upx_exclude`**：`.pyd` 和 numpy/scipy DLL 不压缩
 - Shader 文件需打入 datas：`ui/shaders/spectrogram.vert`、`spectrogram.frag`
+- `ui/icons.py` 用 `PyQt6.QtSvg`（QSvgRenderer）—— PyInstaller 自动分析该 import；图标为内联 SVG 字符串，无资源文件
 
 ---
 
@@ -317,7 +341,8 @@ analyzer/core.py
 
 ---
 
-> 最后更新: 2026-06-16 (配色方案系统重构 + 削波/高频检测算法重写：多声道削波、位深感知、Welch PSD、多因子置信度)
+> 最后更新: 2026-07-14 (UI 现代化重构 Phase 0–4：design token 统一、无边框窗口+SVG图标+快捷键、动画系统 FloatAnim（缩放缓动/LUT交叉淡化/浮层淡入淡出/滑块hover/元数据错峰）)
+> 上一更新: 2026-06-16 (配色方案系统重构 + 削波/高频检测算法重写：多声道削波、位深感知、Welch PSD、多因子置信度)
 > 基于文件: main.py, ui/main_window.py, analyzer/core.py, analyzer/_state.py, analyzer/spectrum.py, analyzer/quality.py, analyzer/load.py, analyzer/metadata.py, analyzer/batch.py, analyzer/palette.py, ui/spectrogram_widget.py, ui/metadata_panel.py, ui/waveform_widget.py, ui/playback_engine.py, ui/batch_dialog.py, ui/styles.py, ui/shaders/spectrogram.vert, ui/shaders/spectrogram.frag, lang.py, spectra.spec
 
 ---

@@ -12,7 +12,7 @@ import math
 import os
 import sys
 import numpy as np
-from PyQt6.QtWidgets import QWidget, QLabel
+from PyQt6.QtWidgets import QWidget, QLabel, QGraphicsOpacityEffect
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QImage
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
@@ -24,6 +24,7 @@ from ui.styles import (
     OVERLAY_BG, TEXT_SEC, CORNER_MD,
 )
 from analyzer.palette import build_lut_np, is_spectra, get_curve_params
+from ui.anim import FloatAnim
 
 
 def _load_shader(name: str) -> str:
@@ -438,6 +439,15 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._pending_blocks: list[tuple[int, np.ndarray]] = []
         self._lut_needs_upload = False
 
+        # ── Phase 4 animations ────────────────────────────────────
+        self._zoom_anim: FloatAnim | None = None
+        self._lut_tex_b: int | None = None
+        self._lut_b_np: np.ndarray | None = None
+        self._lut_b_needs_upload = False
+        self._lut_mix = 0.0
+        self._lut_anim: FloatAnim | None = None
+        self._overlay_anim: FloatAnim | None = None
+
         self._rebuild_lut()
 
     # ── Public API ──────────────────────────────────────────────────
@@ -499,9 +509,35 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._curve_power = cp["power"]
         self._curve_lo = cp["lo"]
         self._curve_span = cp["span"]
-        self._rebuild_lut()
-        self._lut_needs_upload = True
+        new_np = np.ascontiguousarray(build_lut_np(name)[:, :4])
+        if self._gl_program is None or self._lut_tex_id is None:
+            # GL 未初始化 — 走首次上传路径
+            self._lut_np = new_np
+            self._lut_needs_upload = True
+        else:
+            # 交叉淡化：A 保持起点，B 装目标；完成后回写 A
+            self._lut_b_np = new_np
+            self._lut_b_needs_upload = True
+            self._start_lut_fade()
         self.update()
+
+    def _start_lut_fade(self) -> None:
+        """LUT 交叉淡化 200ms（u_lut_mix 0→1）；中途换配色则从当前 mix 继续。"""
+        def tick(v):
+            self._lut_mix = v
+            self.update()
+
+        def finish():
+            # 淡入完成：A := 目标 LUT，mix 归零（下次淡化从 A 重新出发）
+            self._lut_np = self._lut_b_np
+            self._lut_needs_upload = True
+            self._lut_mix = 0.0
+            self.update()
+
+        if self._lut_anim is None:
+            self._lut_anim = FloatAnim(200)
+        self._lut_anim.rebind(on_tick=tick, on_finish=finish)
+        self._lut_anim.start_from(self._lut_mix, 1.0)
 
     @property
     def use_brightness_curve(self) -> bool:
@@ -533,11 +569,38 @@ class SpectrogramGLWidget(QOpenGLWidget):
         """Show the loading overlay."""
         self._progress_label.setText(t("加载中…", "Loading…"))
         self._reposition_progress_label()
-        self._progress_label.setVisible(True)
+        if not self._progress_label.isVisible():
+            self._progress_label.setVisible(True)
+            self._fade_overlay(1.0)
 
     def hide_progress(self) -> None:
         """Hide the loading overlay."""
-        self._progress_label.setVisible(False)
+        if self._progress_label.isVisible():
+            self._fade_overlay(0.0)
+
+    def _fade_overlay(self, target: float) -> None:
+        """加载浮层淡入/淡出（150ms）；完成后移除 QGraphicsOpacityEffect 免常开开销。"""
+        label = self._progress_label
+        eff = label.graphicsEffect()
+        if not isinstance(eff, QGraphicsOpacityEffect):
+            # 新建效果只可能发生在淡入场景（淡出时浮层必已可见、效果已在）
+            eff = QGraphicsOpacityEffect(label)
+            eff.setOpacity(0.0)
+            label.setGraphicsEffect(eff)
+        cur = eff.opacity() / 255.0
+
+        def tick(v):
+            eff.setOpacity((cur + (target - cur) * v) * 255.0)
+
+        def finish():
+            if target == 0.0:
+                label.setVisible(False)
+            label.setGraphicsEffect(None)
+
+        if self._overlay_anim is None:
+            self._overlay_anim = FloatAnim(150)
+        self._overlay_anim.rebind(on_tick=tick, on_finish=finish)
+        self._overlay_anim.start_from(0.0, 1.0)
 
     def _reposition_progress_label(self) -> None:
         w, h = self.width(), self.height()
@@ -605,6 +668,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
                 Qt already provides a current context.
         """
         has_any = (self._tex_id is not None or self._lut_tex_id is not None
+                   or self._lut_tex_b is not None
                    or self._gl_program is not None or self._vao is not None)
         if not has_any:
             return
@@ -619,6 +683,9 @@ class SpectrogramGLWidget(QOpenGLWidget):
             if self._lut_tex_id is not None:
                 glDeleteTextures([self._lut_tex_id])
                 self._lut_tex_id = None
+            if self._lut_tex_b is not None:
+                glDeleteTextures([self._lut_tex_b])
+                self._lut_tex_b = None
             if self._gl_program is not None:
                 glDeleteProgram(self._gl_program)
                 self._gl_program = None
@@ -678,13 +745,18 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._u_curve_power  = glGetUniformLocation(self._gl_program, "u_curve_power")
         self._u_curve_lo     = glGetUniformLocation(self._gl_program, "u_curve_lo")
         self._u_curve_span   = glGetUniformLocation(self._gl_program, "u_curve_span")
+        self._u_colormap2    = glGetUniformLocation(self._gl_program, "u_colormap2")
+        self._u_lut_mix      = glGetUniformLocation(self._gl_program, "u_lut_mix")
 
         self._vao = glGenVertexArrays(1)
 
         self._tex_id = glGenTextures(1)
         self._lut_tex_id = glGenTextures(1)
+        self._lut_tex_b = glGenTextures(1)
 
         self._upload_lut()
+        # B 纹理初始与 A 相同（shader 始终采样两侧，mix=0 时只显示 A）
+        self._upload_lut_texture(self._lut_tex_b, self._lut_np)
         if self._data is not None:
             self._upload_texture()
 
@@ -869,6 +941,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
         steps = delta / 120.0
         factor = 0.85 ** steps  # <1 = zoom in, >1 = zoom out
 
+        start = (self._view_t0, self._view_t1, self._view_f0, self._view_f1)
         shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
 
         if shift:
@@ -903,15 +976,38 @@ class SpectrogramGLWidget(QOpenGLWidget):
                 self._view_t1 = 1
 
         self._clamp_view()
-        self.update()
-        self.view_changed.emit()
+        self._animate_view_to(start)
+
+    def _animate_view_to(self, start: tuple[float, float, float, float]) -> None:
+        """视图窗口缓动到当前目标值（120ms OutCubic）；中途滚轮则从当前显示值重新出发。"""
+        st0, st1, sf0, sf1 = start
+        t0, t1, f0, f1 = self._view_t0, self._view_t1, self._view_f0, self._view_f1
+
+        def tick(v):
+            self._view_t0 = st0 + (t0 - st0) * v
+            self._view_t1 = st1 + (t1 - st1) * v
+            self._view_f0 = sf0 + (f0 - sf0) * v
+            self._view_f1 = sf1 + (f1 - sf1) * v
+            self.update()
+            self.view_changed.emit()
+
+        def finish():
+            # 末帧精确落在目标值（防浮点漂移）
+            self._view_t0, self._view_t1 = t0, t1
+            self._view_f0, self._view_f1 = f0, f1
+            self.update()
+
+        if self._zoom_anim is None:
+            self._zoom_anim = FloatAnim(120)
+        self._zoom_anim.rebind(on_tick=tick, on_finish=finish)
+        self._zoom_anim.start_from(0.0, 1.0)
 
     def mouseDoubleClickEvent(self, event) -> None:
         """Reset to full view."""
+        start = (self._view_t0, self._view_t1, self._view_f0, self._view_f1)
         self._view_t0, self._view_t1 = 0.0, 1.0
         self._view_f0, self._view_f1 = 0.0, 1.0
-        self.update()
-        self.view_changed.emit()
+        self._animate_view_to(start)
         super().mouseDoubleClickEvent(event)
 
     def _clamp_view(self) -> None:
@@ -969,6 +1065,9 @@ class SpectrogramGLWidget(QOpenGLWidget):
         if self._lut_needs_upload:
             self._upload_lut()
             self._lut_needs_upload = False
+        if self._lut_b_needs_upload and self._lut_tex_b is not None:
+            self._upload_lut_texture(self._lut_tex_b, self._lut_b_np)
+            self._lut_b_needs_upload = False
 
         # ── Drain pending streaming blocks ──
         if self._pending_blocks:
@@ -1007,6 +1106,12 @@ class SpectrogramGLWidget(QOpenGLWidget):
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D, self._lut_tex_id)
         glUniform1i(self._u_colormap, 1)
+
+        glActiveTexture(GL_TEXTURE2)
+        _tex_b = self._lut_tex_b if self._lut_tex_b is not None else self._lut_tex_id
+        glBindTexture(GL_TEXTURE_2D, _tex_b)
+        glUniform1i(self._u_colormap2, 2)
+        glUniform1f(self._u_lut_mix, self._lut_mix)
 
         glUniform1f(self._u_vmin, self._vmin)
         glUniform1f(self._u_vmax, self._vmax)
@@ -1050,13 +1155,16 @@ class SpectrogramGLWidget(QOpenGLWidget):
                      GL_RED, GL_FLOAT, data)
         glBindTexture(GL_TEXTURE_2D, 0)
 
-    def _upload_lut(self) -> None:
-        glBindTexture(GL_TEXTURE_2D, self._lut_tex_id)
+    def _upload_lut_texture(self, tex_id: int, lut_np: np.ndarray) -> None:
+        glBindTexture(GL_TEXTURE_2D, tex_id)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
                      256, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                     self._lut_np.tobytes())
+                     lut_np.tobytes())
         glBindTexture(GL_TEXTURE_2D, 0)
+
+    def _upload_lut(self) -> None:
+        self._upload_lut_texture(self._lut_tex_id, self._lut_np)

@@ -5,6 +5,8 @@ out vec4 fragColor;
 
 uniform sampler2D u_spec;
 uniform sampler2D u_colormap;
+uniform sampler2D u_colormap2;   // crossfade target
+uniform float u_lut_mix;      // 0=u_colormap, 1=u_colormap2
 uniform float u_vmin;
 uniform float u_vmax;
 uniform int u_scale_mode;   // 0=linear, 1=log, 2=mel, 3=bark
@@ -82,7 +84,9 @@ void main() {
     t = pow(t, u_curve_power);
     t = clamp((t - u_curve_lo) / u_curve_span, 0.0, 1.0);
 
-    fragColor = texture(u_colormap, vec2(t, 0.5));
+    vec4 cA = texture(u_colormap, vec2(t, 0.5));
+    vec4 cB = texture(u_colormap2, vec2(t, 0.5));
+    fragColor = mix(cA, cB, u_lut_mix);
 
     // Soft fade at the fill boundary — 2-column transition zone
     float alpha = min(edge_dist / 2.0, 1.0);
