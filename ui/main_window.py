@@ -640,6 +640,17 @@ class MainWindow(QMainWindow):
         self._spec.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         _grid.addWidget(self._spec, 1, 1)
 
+        # 空态提示（叠加在声谱图上，鼠标事件穿透；加载开始后隐藏）
+        self._empty_hint = QLabel()
+        self._empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._empty_hint.setStyleSheet(
+            f"color: {TEXT_SEC}; font-family: '{FONT_FAMILY}'; font-size: {FS_LG}px;")
+        self._empty_hint.setText(
+            t("拖入音频文件，或按 Ctrl+O 打开",
+              "Drop an audio file here, or press Ctrl+O"))
+        _grid.addWidget(self._empty_hint, 1, 1)
+
         self._colorbar = _ColorBarWidget()
         self._colorbar.setFixedWidth(SIDE)
         _uc, _cp, _cl, _cs = self._spec.get_curve_params()
@@ -1010,6 +1021,7 @@ class MainWindow(QMainWindow):
 
         self._current_path = path
         self._spec.show_progress()
+        self._empty_hint.hide()
 
         self._load_worker = _LoadWorker(path)
         self._load_worker.loaded.connect(self._on_load_done)
@@ -1325,6 +1337,9 @@ class MainWindow(QMainWindow):
         self._zoom_hint.setText(
             t("滚轮: 缩放时间  Shift+滚轮: 缩放频率  双击: 重置",
               "Wheel: zoom time  Shift+Wheel: zoom freq  Dbl-click: reset"))
+        self._empty_hint.setText(
+            t("拖入音频文件，或按 Ctrl+O 打开",
+              "Drop an audio file here, or press Ctrl+O"))
         if not self._current_path:
             self._status_label.setText(t("就绪", "Ready"))
         self.setWindowTitle("Spectra")

@@ -81,6 +81,11 @@ class TestMainWindowBasics:
         mw = _build_main_window(app)
         assert mw._meta is not None
 
+    def test_empty_hint_visible_initially(self, app):
+        mw = _build_main_window(app)
+        assert mw._empty_hint.text() != ""
+        assert mw._empty_hint.isVisible()
+
     def test_has_waveform(self, app):
         mw = _build_main_window(app)
         assert mw._wave is not None
