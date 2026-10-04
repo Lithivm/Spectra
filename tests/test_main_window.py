@@ -130,7 +130,7 @@ class TestThemeSwitch:
 
     def test_initial_palette(self, app):
         mw = _build_main_window(app)
-        assert mw._current_palette == "inferno"
+        assert mw._current_palette == "spectra"
 
     def test_mode_default(self, app):
         mw = _build_main_window(app)

@@ -12,7 +12,12 @@ import numpy as np
 from typing import Any
 
 from PyQt6.QtCore import QThread, Qt, pyqtSignal, QTimer, QRectF, QPointF, QSize
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor, QPainter
+from PyQt6.QtGui import (
+    QDragEnterEvent, QDropEvent, QColor, QPainter,
+    QKeySequence, QShortcut,
+)
+
+from ui.icons import render_icon
 from PyQt6.QtWidgets import (
     QFileDialog, QHBoxLayout, QVBoxLayout,
     QLabel, QMainWindow, QMessageBox, QStatusBar, QWidget,
@@ -31,11 +36,15 @@ from ui.metadata_panel import MetadataPanel
 from ui.spectrogram_widget import SpectrogramGLWidget, _YAxisWidget, _XAxisWidget, _ColorBarWidget
 from ui.waveform_widget import WaveformWidget
 from ui.styles import (
-    BG_BASE, BG_SURFACE, BG_RAISED,
+    BG_BASE, BG_SURFACE, BG_RAISED, BG_WELL,
     BORDER_SUB, BORDER_MID,
-    ACCENT, ACCENT_ALT,
+    ACCENT, ACCENT_HOVER, ACCENT_PRESSED, ACCENT_ALT, ACCENT_RED,
     TEXT_PRI, TEXT_SEC, TEXT_DIM,
+    FONT_FAMILY, FS_XS, FS_SM, FS_BODY, FS_MD, FS_LG, FS_XL,
+    CORNER_SM, CORNER_MD, CORNER_LG, SIDE,
 )
+
+BTN_H = 30  # unified toolbar control height
 from lang import t, toggle_lang, on_lang_change
 
 if TYPE_CHECKING:
@@ -43,7 +52,7 @@ if TYPE_CHECKING:
 
 APP_STYLESHEET = f"""
 * {{
-    font-family: "Segoe UI", "SF Pro Display", sans-serif;
+    font-family: "{FONT_FAMILY}", "SF Pro Display", sans-serif;
 }}
 QMainWindow {{
     background-color: {BG_BASE};
@@ -51,23 +60,23 @@ QMainWindow {{
 QWidget {{
     background-color: transparent;
     color: {TEXT_PRI};
-    font-size: 12px;
+    font-size: {FS_MD}px;
 }}
 QStatusBar {{
     background-color: {BG_SURFACE};
     color: {TEXT_DIM};
     border-top: 1px solid {BORDER_SUB};
-    font-size: 10px;
+    font-size: {FS_SM}px;
     font-family: "Consolas", monospace;
     padding: 0 12px;
 }}
 QComboBox {{
-    background-color: {BG_RAISED};
+    background-color: {BG_WELL};
     border: 1px solid {BORDER_MID};
-    border-radius: 6px;
+    border-radius: {CORNER_SM}px;
     color: {TEXT_PRI};
     padding: 4px 10px;
-    font-size: 11px;
+    font-size: {FS_BODY}px;
     min-width: 80px;
 }}
 QComboBox:hover {{
@@ -80,40 +89,41 @@ QComboBox::drop-down {{
 QComboBox QAbstractItemView {{
     background-color: {BG_RAISED};
     border: 1px solid {BORDER_MID};
-    border-radius: 6px;
+    border-radius: {CORNER_SM}px;
     selection-background-color: {ACCENT};
+    selection-color: {ACCENT_ALT};
     color: {TEXT_PRI};
     padding: 4px;
     outline: none;
 }}
 QPushButton {{
-    background-color: {BG_RAISED};
+    background-color: {BG_WELL};
     border: 1px solid {BORDER_MID};
-    border-radius: 7px;
+    border-radius: {CORNER_SM}px;
     color: {TEXT_SEC};
     padding: 5px 16px;
-    font-size: 11px;
+    font-size: {FS_BODY}px;
     font-weight: 500;
 }}
 QPushButton:hover {{
     border-color: {ACCENT};
     color: {TEXT_PRI};
-    background-color: rgba(124, 106, 247, 0.08);
+    background-color: rgba(255, 255, 255, 0.06);
 }}
 QPushButton:pressed {{
-    background-color: rgba(124, 106, 247, 0.15);
+    background-color: rgba(255, 255, 255, 0.12);
 }}
 QPushButton#primary {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-        stop:0 {ACCENT}, stop:1 {ACCENT_ALT});
+    background: {ACCENT};
     border: none;
-    color: white;
+    color: {ACCENT_ALT};
     font-weight: 600;
 }}
 QPushButton#primary:hover {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-        stop:0 #E0B55A, stop:1 #C89A3A);
-    color: white;
+    background: {ACCENT_HOVER};
+}}
+QPushButton#primary:pressed {{
+    background: {ACCENT_PRESSED};
 }}
 QScrollBar:vertical {{
     background: transparent;
@@ -150,7 +160,7 @@ def _shadow(radius: int = 24, opacity: int = 70) -> QGraphicsDropShadowEffect:
 
 _card_ids = itertools.count()
 
-def _card(radius: int = 12) -> QWidget:
+def _card(radius: int = CORNER_LG) -> QWidget:
     name = f"_card_{next(_card_ids)}"
     w = QWidget()
     w.setObjectName(name)
@@ -164,17 +174,71 @@ def _card(radius: int = 12) -> QWidget:
     return w
 
 
+class _RootWidget(QWidget):
+    """Root container — provides native edge-resize for the frameless window."""
+
+    _MARGIN = 8  # px from window edge that triggers resize
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            win = self.window()
+            geo = win.frameGeometry()
+            gx, gy = event.globalPosition().x(), event.globalPosition().y()
+            m = self._MARGIN
+            edges = []
+            if gx <= geo.left() + m:
+                edges.append(Qt.Edge.LeftEdge)
+            if gx >= geo.right() - m:
+                edges.append(Qt.Edge.RightEdge)
+            if gy <= geo.top() + m:
+                edges.append(Qt.Edge.TopEdge)
+            if gy >= geo.bottom() - m:
+                edges.append(Qt.Edge.BottomEdge)
+            if edges:
+                wh = win.windowHandle()
+                if wh is not None:
+                    wh.startSystemResize(edges)
+                    return
+        super().mousePressEvent(event)
+
+
+class _TitleBarCard(QWidget):
+    """Toolbar card that doubles as the frameless window's title bar.
+
+    Drag on empty space (or the brand label) to move; double-click to maximize/restore.
+    """
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self.childAt(event.position().toPoint()) is None:
+            win = self.window()
+            self._drag_offset = event.globalPosition().toPoint() - win.frameGeometry().topLeft()
+            self._dragging = True
+
+    def mouseMoveEvent(self, event) -> None:
+        if getattr(self, "_dragging", False):
+            self.window().move(event.globalPosition().toPoint() - self._drag_offset)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._dragging = False
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if self.childAt(event.position().toPoint()) is None:
+            win = self.window()
+            if win.isMaximized():
+                win.showNormal()
+            else:
+                win.showMaximized()
+
+
 class _PlaybackSlider(QWidget):
     """Custom playback progress bar with a draggable handle.
 
-    The widget extends _PAD pixels beyond each side so the handle is never
-    clipped while the track itself aligns exactly with the spectrogram.
+    Spans the full grid row; the track is drawn with SIDE margins so it
+    aligns exactly with the spectrogram between Y-axis and colorbar.
     """
     sliderPressed = pyqtSignal()
     sliderReleased = pyqtSignal()
     valueChanged = pyqtSignal(int)
-
-    _PAD = 8  # extra pixels on each side for handle overflow
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -183,7 +247,6 @@ class _PlaybackSlider(QWidget):
         self._dragging = False
         self.setMouseTracking(True)
         self._hover = False
-        self._resizing = False  # guard against recursive resizeEvent
         self._view_t0 = 0.0   # spectrogram zoom range (fraction of duration)
         self._view_t1 = 1.0
 
@@ -206,15 +269,6 @@ class _PlaybackSlider(QWidget):
 
     def sizeHint(self):
         return QSize(100, 20)
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        if not self._resizing:
-            self._resizing = True
-            geo = self.geometry()
-            pad = self._PAD
-            self.setGeometry(geo.x() - pad, geo.y(), geo.width() + 2 * pad, geo.height())
-            self._resizing = False
 
     def enterEvent(self, event) -> None:
         self._hover = True
@@ -241,7 +295,7 @@ class _PlaybackSlider(QWidget):
             self.sliderReleased.emit()
 
     def _update_from_mouse(self, x: float) -> None:
-        pad = self._PAD
+        pad = SIDE
         w = self.width() - 2 * pad  # track width
         if w <= 0:
             return
@@ -255,7 +309,7 @@ class _PlaybackSlider(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pad = self._PAD
+        pad = SIDE
         w = self.width() - 2 * pad  # track width = spectrogram width
         h = self.height()
         cy = h // 2
@@ -286,7 +340,7 @@ class _PlaybackSlider(QWidget):
         if self._maximum > 0:
             handle_x = pad + int(w * self._value / self._maximum)
             handle_r = 6 if self._hover or self._dragging else 4
-            painter.setBrush(QColor("#F0EDE8"))
+            painter.setBrush(QColor(ACCENT))
             painter.drawEllipse(QPointF(handle_x, cy), handle_r, handle_r)
 
         painter.end()
@@ -504,7 +558,8 @@ class MainWindow(QMainWindow):
         self.menuBar().setVisible(False)
         self._create_statusbar()
 
-        root = QWidget()
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+        root = _RootWidget()
         root.setStyleSheet(f"background: {BG_BASE};")
         self.setCentralWidget(root)
         root_layout = QHBoxLayout(root)
@@ -519,16 +574,16 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self._make_toolbar())
 
         # 波形卡片 — left/right margins align with spectrogram (y-axis + colorbar)
-        wave_card = _card(radius=10)
+        wave_card = _card()
         wave_card.setFixedHeight(130)
         wl = QVBoxLayout(wave_card)
-        wl.setContentsMargins(36, 0, 36, 0)
+        wl.setContentsMargins(SIDE, 0, SIDE, 0)
         self._wave = WaveformWidget()
         wl.addWidget(self._wave)
         left_layout.addWidget(wave_card)
 
         # 频谱卡片
-        spec_card = _card(radius=10)
+        spec_card = _card()
         sl = QVBoxLayout(spec_card)
         sl.setContentsMargins(0, 0, 0, 0)
         sl.setSpacing(0)
@@ -537,8 +592,6 @@ class MainWindow(QMainWindow):
         _grid = QGridLayout()
         _grid.setContentsMargins(0, 0, 0, 0)
         _grid.setSpacing(0)
-
-        SIDE = 36
 
         _grid.setColumnMinimumWidth(0, SIDE)
         _grid.setColumnStretch(0, 0)
@@ -554,7 +607,7 @@ class MainWindow(QMainWindow):
         _grid.setRowMinimumHeight(3, SIDE)
         _grid.setRowStretch(3, 0)
 
-        # Row 0: filename
+        # NOTE: SIDE is imported from ui.styles — single source of truth
         self._filename_widget = QLabel()
         self._filename_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._filename_widget.setStyleSheet(
@@ -571,7 +624,7 @@ class MainWindow(QMainWindow):
         _grid.addWidget(self._spec, 1, 1)
 
         self._colorbar = _ColorBarWidget()
-        self._colorbar.setFixedWidth(36)
+        self._colorbar.setFixedWidth(SIDE)
         _uc, _cp, _cl, _cs = self._spec.get_curve_params()
         self._colorbar.set_data(self._spec._lut_np, use_curve=_uc,
                                 curve_power=_cp, curve_lo=_cl, curve_span=_cs)
@@ -599,19 +652,20 @@ class MainWindow(QMainWindow):
         self._cursor_label = QLabel(spec_card)
         self._cursor_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._cursor_label.setStyleSheet(
-            f"color: {TEXT_PRI}; font-size: 11px; font-family: 'Consolas', monospace;"
-            f" background: transparent; border: none;"
+            f"color: {TEXT_PRI}; font-size: {FS_BODY}px; font-family: 'Consolas', monospace;"
+            f" background: {BG_RAISED}; border: 1px solid {BORDER_SUB};"
+            f" border-radius: {CORNER_SM}px; padding: 2px 8px;"
         )
         self._cursor_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._cursor_label.hide()
 
-        # Playback slider — between spectrogram and X-axis
+        # Playback slider — spans all columns; track inset by SIDE (see paintEvent)
         self._progress_slider = _PlaybackSlider()
         self._progress_slider.setFixedHeight(20)
         self._progress_slider.sliderPressed.connect(self._on_slider_pressed)
         self._progress_slider.sliderReleased.connect(self._on_slider_released)
         self._progress_slider.valueChanged.connect(self._on_slider_changed)
-        _grid.addWidget(self._progress_slider, 2, 1)  # row 2, col 1 — aligned with spectrogram
+        _grid.addWidget(self._progress_slider, 2, 0, 1, 3)
 
         self._playback.state_changed.connect(self._on_playback_state)
         self._slider_dragging = False
@@ -625,7 +679,16 @@ class MainWindow(QMainWindow):
         on_lang_change(self._retranslate)
 
     def _make_toolbar(self) -> QWidget:
-        card = _card(radius=10)
+        card = _TitleBarCard()
+        name = f"_toolbar_{next(_card_ids)}"
+        card.setObjectName(name)
+        card.setStyleSheet(f"""
+            #{name} {{
+                background-color: {BG_SURFACE};
+                border: 1px solid {BORDER_SUB};
+                border-radius: {CORNER_LG}px;
+            }}
+        """)
         card.setFixedHeight(52)
         layout = QHBoxLayout(card)
         layout.setContentsMargins(16, 0, 16, 0)
@@ -639,6 +702,8 @@ class MainWindow(QMainWindow):
             background: transparent;
             border: none;
         """)
+        # 品牌区作为标题栏拖拽区（鼠标事件穿透到 _TitleBarCard）
+        self._brand_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(self._brand_label)
 
         sep0 = QFrame()
@@ -649,7 +714,7 @@ class MainWindow(QMainWindow):
 
         self._open_btn = QPushButton(t("打开文件", "Open File"))
         self._open_btn.setObjectName("primary")
-        self._open_btn.setFixedHeight(32)
+        self._open_btn.setFixedHeight(BTN_H)
         self._open_btn.setFixedWidth(100)
         self._open_btn.clicked.connect(self._on_open_file)
         layout.addWidget(self._open_btn)
@@ -660,18 +725,19 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._play_label)
 
         # Play / Pause
-        self._play_btn = QPushButton("▶")
-        self._play_btn.setFixedSize(36, 30)
-        self._play_btn.setToolTip(t("播放/暂停", "Play / Pause"))
+        self._play_btn = QPushButton()
+        self._play_btn.setIcon(render_icon("play", 18))
+        self._play_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._play_btn.setFixedSize(36, BTN_H)
         self._play_btn.setStyleSheet(f"""
             QPushButton {{
                 font-size: 14px; font-weight: bold;
-                color: {TEXT_PRI}; background: #222526;
-                border: 1px solid #444; border-radius: 4px;
+                color: {TEXT_PRI}; background: {BG_WELL};
+                border: 1px solid {BORDER_MID}; border-radius: {CORNER_SM}px;
                 padding: 0px 0px 2px 0px;
             }}
-            QPushButton:hover {{ border-color: {ACCENT}; background: #2a2d2f; }}
-            QPushButton:pressed {{ background: #1a1c1d; }}
+            QPushButton:hover {{ border-color: {ACCENT}; background: {BORDER_SUB}; }}
+            QPushButton:pressed {{ background: {BG_BASE}; }}
         """)
         self._play_btn.clicked.connect(self._on_playback_toggle)
         layout.addWidget(self._play_btn)
@@ -684,7 +750,7 @@ class MainWindow(QMainWindow):
         self._palette_combo = QComboBox()
         self._palette_combo.addItems(list(PALETTE.keys()))
         self._palette_combo.setCurrentText("spectra")
-        self._palette_combo.setFixedHeight(30)
+        self._palette_combo.setFixedHeight(BTN_H)
         self._palette_combo.currentTextChanged.connect(self._on_palette_changed)
         layout.addWidget(self._palette_combo)
 
@@ -700,7 +766,7 @@ class MainWindow(QMainWindow):
         self._mode_combo = QComboBox()
         self._mode_combo.addItems(["standard", "multi", "reassign"])
         self._mode_combo.setCurrentText("standard")
-        self._mode_combo.setFixedHeight(30)
+        self._mode_combo.setFixedHeight(BTN_H)
         self._mode_combo.setFixedWidth(88)
         self._mode_combo.currentTextChanged.connect(self._on_mode_changed)
         layout.addWidget(self._mode_combo)
@@ -717,7 +783,7 @@ class MainWindow(QMainWindow):
         self._yscale_combo = QComboBox()
         self._yscale_combo.addItems(["log", "mel", "bark", "linear"])
         self._yscale_combo.setCurrentText("linear")
-        self._yscale_combo.setFixedHeight(30)
+        self._yscale_combo.setFixedHeight(BTN_H)
         self._yscale_combo.currentTextChanged.connect(self._on_yscale_changed)
         layout.addWidget(self._yscale_combo)
 
@@ -733,7 +799,7 @@ class MainWindow(QMainWindow):
         self._fft_combo = QComboBox()
         self._fft_combo.addItems(["256", "512", "1024", "2048", "4096", "8192", "16384"])
         self._fft_combo.setCurrentText("8192")
-        self._fft_combo.setFixedHeight(30)
+        self._fft_combo.setFixedHeight(BTN_H)
         self._fft_combo.setFixedWidth(72)
         self._fft_combo.currentTextChanged.connect(self._on_fft_size_changed)
         layout.addWidget(self._fft_combo)
@@ -745,18 +811,64 @@ class MainWindow(QMainWindow):
         layout.addWidget(sep4)
 
         self._save_btn = QPushButton(t("保存PNG", "Save PNG"))
-        self._save_btn.setFixedHeight(30)
+        self._save_btn.setFixedHeight(BTN_H)
         self._save_btn.clicked.connect(self._on_save_screenshot)
         layout.addWidget(self._save_btn)
 
         # language toggle
         self._lang_btn = QPushButton("中/EN")
-        self._lang_btn.setFixedHeight(30)
+        self._lang_btn.setFixedHeight(BTN_H)
         self._lang_btn.setMinimumWidth(60)
         self._lang_btn.clicked.connect(self._on_toggle_lang)
         layout.addWidget(self._lang_btn)
 
+        # 窗口控制按钮（frameless 标题栏）
+        for text, slot in [("\u2014", self._on_minimize), ("\u25A1", self._on_maximize_toggle)]:
+            b = QPushButton(text)
+            b.setFixedSize(30, BTN_H)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(
+                f"QPushButton {{ background: transparent; border: none; color: {TEXT_SEC};"
+                f" font-size: {FS_MD}px; }}"
+                f" QPushButton:hover {{ background: rgba(255, 255, 255, 0.08); color: {TEXT_PRI}; }}"
+            )
+            b.clicked.connect(slot)
+            layout.addWidget(b)
+
+        close_btn = QPushButton("\u00D7")
+        close_btn.setFixedSize(30, BTN_H)
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: none; color: {TEXT_SEC};"
+            f" font-size: {FS_MD}px; }}"
+            f" QPushButton:hover {{ background: {ACCENT_RED}; color: white; }}"
+        )
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(close_btn)
+
+        self._setup_shortcuts_and_tooltips()
+
         return card
+
+    def _setup_shortcuts_and_tooltips(self) -> None:
+        """Keyboard shortcuts + tooltips (frameless window keeps native a11y)."""
+        QShortcut(QKeySequence("Ctrl+O"), self).activated.connect(self._on_open_file)
+        QShortcut(QKeySequence(Qt.Key.Key_Space), self).activated.connect(self._on_space_toggle)
+        QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._on_save_screenshot)
+        self._update_tooltips()
+
+    def _update_tooltips(self) -> None:
+        self._open_btn.setToolTip(t("打开文件 (Ctrl+O)", "Open File (Ctrl+O)"))
+        self._play_btn.setToolTip(t("播放/暂停 (空格)", "Play / Pause (Space)"))
+        self._save_btn.setToolTip(t("保存PNG (Ctrl+S)", "Save PNG (Ctrl+S)"))
+
+    def _on_space_toggle(self) -> None:
+        """Space toggles playback unless an interactive control has focus."""
+        from PyQt6.QtWidgets import QAbstractButton, QComboBox
+        f = self.focusWidget()
+        if isinstance(f, (QAbstractButton, QComboBox)):
+            return  # let the focused control handle Space itself
+        self._on_playback_toggle()
 
     def _create_statusbar(self) -> None:
         sb = QStatusBar()
@@ -765,11 +877,11 @@ class MainWindow(QMainWindow):
             t("滚轮: 缩放时间  Shift+滚轮: 缩放频率  双击: 重置",
               "Wheel: zoom time  Shift+Wheel: zoom freq  Dbl-click: reset"))
         self._zoom_hint.setStyleSheet(
-            f"color: {TEXT_DIM}; font-size: 10px; font-family: 'Consolas'; background: transparent;")
+            f"color: {TEXT_DIM}; font-size: {FS_SM}px; font-family: 'Consolas'; background: transparent;")
         sb.addWidget(self._zoom_hint)
         self._status_label = QLabel(t("就绪", "Ready"))
         self._status_label.setStyleSheet(
-            f"color: {TEXT_DIM}; font-size: 10px; font-family: 'Consolas'; background: transparent;")
+            f"color: {TEXT_DIM}; font-size: {FS_SM}px; font-family: 'Consolas'; background: transparent;")
         sb.addPermanentWidget(self._status_label)
         self.setStatusBar(sb)
 
@@ -1016,9 +1128,9 @@ class MainWindow(QMainWindow):
     def _on_playback_state(self, state: str) -> None:
         actual = self._playback.state
         if actual == "playing":
-            self._play_btn.setText("‖")
+            self._play_btn.setIcon(render_icon("pause", 18))
         else:
-            self._play_btn.setText("▶")
+            self._play_btn.setIcon(render_icon("play", 18))
             if actual == "stopped":
                 self._progress_slider.setValue(0)
             # 停止/暂停时，若鼠标不在声谱区，清除光标
@@ -1082,7 +1194,6 @@ class MainWindow(QMainWindow):
         self._cursor_label.setText(text)
         self._cursor_label.adjustSize()
         # Position: center on cursor x, vertically centered in filename row
-        SIDE = 36  # YAxis width
         lw = self._cursor_label.width()
         label_x = SIDE + px - lw // 2
         # Clamp so label stays within spectrogram area
@@ -1186,6 +1297,7 @@ class MainWindow(QMainWindow):
         self._lang_btn.setText("EN" if LANG == "zh" else "中")
 
     def _retranslate(self, _lang: str | None = None) -> None:
+        self._update_tooltips()
         self._brand_label.setText("Spectra")
         self._open_btn.setText(t("打开文件", "Open File"))
         self._save_btn.setText(t("保存PNG", "Save PNG"))
@@ -1199,6 +1311,40 @@ class MainWindow(QMainWindow):
         if not self._current_path:
             self._status_label.setText(t("就绪", "Ready"))
         self.setWindowTitle("Spectra")
+
+    def _on_minimize(self) -> None:
+        self.showMinimized()
+
+    def _on_maximize_toggle(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not getattr(self, "_rounded_applied", False):
+            self._rounded_applied = True
+            self._apply_win11_rounding()
+
+    def _apply_win11_rounding(self) -> None:
+        """Best-effort Win11 rounded corners for the frameless window (no-op elsewhere)."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            dwmapi = ctypes.windll.dwmapi  # Windows only
+            DWMWA_WINDOW_CORNER_PREFERENCE = 33
+            DWMWCP_ROUND = 2
+            pref = ctypes.c_int(DWMWCP_ROUND)
+            hwnd = int(self.winId())
+            dwmapi.DwmSetWindowAttribute(
+                wintypes.HWND(hwnd),
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                ctypes.byref(pref),
+                ctypes.sizeof(pref),
+            )
+        except Exception:
+            pass
 
     def closeEvent(self, event) -> None:
         self._cancel_spectrum()

@@ -6,6 +6,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QPaintEvent, QPainter
 from PyQt6.QtWidgets import QWidget
+from ui.styles import PROGRESS_FILL, PROGRESS_BG
 
 
 class ProgressBar(QWidget):
@@ -26,9 +27,8 @@ class ProgressBar(QWidget):
 
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
-        # Inferno-yellow: matches the colormap's warm tone
-        self._fill_color = QColor("#ff9933")
-        self._bg_color = QColor("#222222")
+        self._fill_color = QColor(PROGRESS_FILL)
+        self._bg_color = QColor(PROGRESS_BG)
 
     def set_progress(self, fraction: float) -> None:
         """Set progress 0.0–1.0. Triggers fade-out timer on 1.0."""

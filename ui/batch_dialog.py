@@ -7,8 +7,9 @@ from PyQt6.QtWidgets import (
 )
 from lang import t
 from ui.styles import (
-    BG_SURFACE, BG_RAISED, BORDER_SUB, BORDER_MID,
-    TEXT_PRI, TEXT_SEC, ACCENT,
+    BG_SURFACE, BG_RAISED, BG_WELL, BORDER_SUB, BORDER_MID,
+    TEXT_PRI, TEXT_SEC, ACCENT, ACCENT_HOVER, ACCENT_PRESSED, ACCENT_ALT,
+    CORNER_SM, CORNER_LG, FS_SM, FS_BODY, FS_LG,
 )
 
 
@@ -26,7 +27,7 @@ class BatchProgressDialog(QDialog):
             QDialog {{
                 background-color: {BG_SURFACE};
                 border: 1px solid {BORDER_SUB};
-                border-radius: 12px;
+                border-radius: {CORNER_LG}px;
             }}
             QLabel {{
                 color: {TEXT_PRI};
@@ -34,47 +35,46 @@ class BatchProgressDialog(QDialog):
                 border: none;
             }}
             QProgressBar {{
-                background-color: #1a1d1f;
+                background-color: {BG_WELL};
                 border: 1px solid {BORDER_MID};
-                border-radius: 6px;
+                border-radius: {CORNER_SM}px;
                 height: 24px;
                 text-align: center;
                 color: {TEXT_PRI};
-                font-size: 11px;
+                font-size: {FS_BODY}px;
             }}
             QProgressBar::chunk {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #E0B55A, stop:1 #C89A3A);
-                border-radius: 5px;
+                background: {ACCENT};
+                border-radius: {CORNER_SM - 1}px;
             }}
             QPushButton {{
                 background-color: {BG_RAISED};
                 border: 1px solid {BORDER_MID};
-                border-radius: 6px;
+                border-radius: {CORNER_SM}px;
                 color: {TEXT_SEC};
                 padding: 6px 16px;
-                font-size: 11px;
+                font-size: {FS_BODY}px;
             }}
             QPushButton:hover {{
                 border-color: {ACCENT};
                 color: {TEXT_PRI};
             }}
             QTextEdit {{
-                background-color: #1a1d1f;
+                background-color: {BG_WELL};
                 border: 1px solid {BORDER_MID};
-                border-radius: 6px;
+                border-radius: {CORNER_SM}px;
                 color: {TEXT_SEC};
                 font-family: 'Consolas', monospace;
-                font-size: 10px;
+                font-size: {FS_SM}px;
             }}
             QScrollBar:vertical {{
                 background: transparent;
-                width: 4px;
+                width: 6px;
                 border: none;
             }}
             QScrollBar::handle:vertical {{
                 background: {BORDER_MID};
-                border-radius: 2px;
+                border-radius: 3px;
             }}
         """)
         self._setup_ui()
@@ -85,11 +85,11 @@ class BatchProgressDialog(QDialog):
         layout.setSpacing(12)
 
         self._status_label = QLabel(t("正在分析...", "Analyzing..."))
-        self._status_label.setStyleSheet("font-size: 13px; font-weight: 600;")
+        self._status_label.setStyleSheet(f"font-size: {FS_LG}px; font-weight: 600;")
         layout.addWidget(self._status_label)
 
         self._file_label = QLabel(f"0 / {self._total}")
-        self._file_label.setStyleSheet(f"color: {TEXT_SEC}; font-size: 11px;")
+        self._file_label.setStyleSheet(f"color: {TEXT_SEC}; font-size: {FS_BODY}px;")
         layout.addWidget(self._file_label)
 
         self._progress = QProgressBar()
@@ -110,16 +110,17 @@ class BatchProgressDialog(QDialog):
         self._export_btn = QPushButton(t("导出CSV", "Export CSV"))
         self._export_btn.setEnabled(False)
         self._export_btn.setObjectName("primary")
-        self._export_btn.setStyleSheet("""
-            QPushButton#primary {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #E0B55A, stop:1 #C89A3A);
+        self._export_btn.setStyleSheet(f"""
+            QPushButton#primary {{
+                background: {ACCENT};
                 border: none;
-                color: white;
+                color: {ACCENT_ALT};
                 font-weight: 600;
-                border-radius: 6px;
+                border-radius: {CORNER_SM}px;
                 padding: 6px 16px;
-            }
+            }}
+            QPushButton#primary:hover {{ background: {ACCENT_HOVER}; }}
+            QPushButton#primary:pressed {{ background: {ACCENT_PRESSED}; }}
         """)
         btn_layout.addWidget(self._export_btn)
         layout.addLayout(btn_layout)

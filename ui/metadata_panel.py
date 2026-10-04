@@ -19,6 +19,8 @@ from ui.styles import (
     BORDER_SUB, BORDER_MID,
     ACCENT, ACCENT_GRN, ACCENT_RED, ACCENT_AMB,
     TEXT_PRI, TEXT_SEC, TEXT_DIM,
+    FONT_FAMILY, FS_XS, FS_BODY, FS_MD, FS_LG,
+    CORNER_SM, CORNER_LG,
 )
 
 
@@ -26,13 +28,13 @@ def _section_label(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setStyleSheet(f"""
         color: {TEXT_DIM};
-        font-size: 9px;
+        font-size: {FS_XS}px;
         letter-spacing: 1.5px;
         font-weight: 600;
         padding: 14px 16px 6px 16px;
         background: transparent;
         border: none;
-        font-family: 'Segoe UI', sans-serif;
+        font-family: '{FONT_FAMILY}';
     """)
     return lbl
 
@@ -65,7 +67,7 @@ class _Row(QWidget):
         self._key_label = QLabel(key)
         self._key_label.setStyleSheet(f"""
             color: {TEXT_SEC};
-            font-size: 11px;
+            font-size: {FS_BODY}px;
             min-width: 75px;
             max-width: 75px;
             background: transparent;
@@ -76,7 +78,7 @@ class _Row(QWidget):
         self._value_label = QLabel(value)
         self._value_label.setStyleSheet(f"""
             color: {value_color};
-            font-size: 11px;
+            font-size: {FS_BODY}px;
             font-family: 'Consolas', monospace;
             background: transparent;
             border: none;
@@ -117,7 +119,7 @@ class _AnalysisRow(QWidget):
         self._key_label = QLabel(key)
         self._key_label.setStyleSheet(f"""
             color: {TEXT_SEC};
-            font-size: 11px;
+            font-size: {FS_BODY}px;
             min-width: 75px;
             max-width: 75px;
             background: transparent;
@@ -128,7 +130,7 @@ class _AnalysisRow(QWidget):
         self._value_label = QLabel(value)
         self._value_label.setStyleSheet(f"""
             color: {TEXT_PRI if ok else (ACCENT_AMB if warn else ACCENT_RED)};
-            font-size: 11px;
+            font-size: {FS_BODY}px;
             font-family: 'Consolas', monospace;
             background: transparent;
             border: none;
@@ -144,7 +146,7 @@ class _AnalysisRow(QWidget):
             color = ACCENT_AMB
         else:
             color = ACCENT_RED
-        dot.setStyleSheet(f"color: {color}; font-size: 12px; background: transparent; border: none;")
+        dot.setStyleSheet(f"color: {color}; font-size: {FS_MD}px; background: transparent; border: none;")
         dot.setFixedWidth(20)
         dot.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(dot)
@@ -169,7 +171,7 @@ class MetadataPanel(QWidget):
             QWidget {{
                 background-color: {BG_SURFACE};
                 border: 1px solid {BORDER_SUB};
-                border-radius: 12px;
+                border-radius: {CORNER_LG}px;
             }}
         """)
         outer = QVBoxLayout(self)
@@ -191,7 +193,7 @@ class MetadataPanel(QWidget):
         self._header_title = QLabel(t("文件信息", "File Info"))
         self._header_title.setStyleSheet(f"""
             color: {TEXT_PRI};
-            font-size: 13px;
+            font-size: {FS_LG}px;
             font-weight: 600;
             background: transparent;
             border: none;
@@ -215,12 +217,12 @@ class MetadataPanel(QWidget):
             }}
             QScrollBar:vertical {{
                 background: transparent;
-                width: 4px;
+                width: 6px;
                 border: none;
             }}
             QScrollBar::handle:vertical {{
                 background: {BORDER_MID};
-                border-radius: 2px;
+                border-radius: 3px;
             }}
         """)
 
@@ -241,7 +243,7 @@ class MetadataPanel(QWidget):
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_label.setStyleSheet(f"""
             color: {TEXT_DIM};
-            font-size: 12px;
+            font-size: {FS_MD}px;
             padding: 48px 24px;
             background: transparent;
             border: none;
@@ -310,7 +312,7 @@ class MetadataPanel(QWidget):
         self._content_layout.addWidget(_divider())
         self._analysis_placeholder = QLabel(t("正在分析…", "Analyzing…"))
         self._analysis_placeholder.setStyleSheet(f"""
-            color: {TEXT_DIM}; font-size: 11px; padding: 8px 16px;
+            color: {TEXT_DIM}; font-size: {FS_BODY}px; padding: 8px 16px;
             background: transparent; border: none;
         """)
         self._content_layout.addWidget(self._analysis_placeholder)

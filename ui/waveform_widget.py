@@ -5,7 +5,9 @@ import numpy as np
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPainter, QColor, QBrush, QPolygonF, QFont
 from lang import t, on_lang_change
-from ui.styles import BORDER_MID
+from ui.styles import (
+    BORDER_MID, WAVEFORM_LINE, FONT_FAMILY, FS_LG,
+)
 from PyQt6.QtCore import Qt, QRectF, QPointF
 
 _ENVELOPE_SIZE = 4096
@@ -74,9 +76,7 @@ class WaveformWidget(QWidget):
         if self._cached_polygon is None:
             return
         painter.setPen(Qt.PenStyle.NoPen)
-        line_color = QColor("#e8e6e2")
-        line_color.setAlpha(220)
-        painter.setBrush(QBrush(line_color))
+        painter.setBrush(QBrush(QColor(WAVEFORM_LINE)))
         painter.drawPolygon(self._cached_polygon)
 
     def _cache_normals(self) -> None:
@@ -131,6 +131,7 @@ class WaveformWidget(QWidget):
 
     def _draw_empty(self, painter, rect):
         painter.setPen(QColor(BORDER_MID))
-        font = QFont("system-ui, sans-serif", 13)
+        font = QFont(FONT_FAMILY)
+        font.setPixelSize(FS_LG)
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, t("波形图 — 打开音频文件查看", "Waveform — open an audio file to view"))

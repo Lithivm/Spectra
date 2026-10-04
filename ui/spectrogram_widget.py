@@ -18,6 +18,11 @@ from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
 from lang import t
+from ui.styles import (
+    FONT_FAMILY, FS_XS, FS_SM, FS_LG, SIDE,
+    AXIS_TICK, AXIS_TEXT, COLORBAR_BORDER, CUTOFF_LINE, CURSOR_LINE,
+    OVERLAY_BG, TEXT_SEC, CORNER_MD,
+)
 from analyzer.palette import build_lut_np, is_spectra, get_curve_params
 
 
@@ -79,7 +84,8 @@ class _YAxisWidget(QWidget):
         pad_top, pad_bot = 0, 0
         h_eff = h - pad_top - pad_bot
 
-        font = QFont("Segoe UI, sans-serif", 7)
+        font = QFont(FONT_FAMILY)
+        font.setPixelSize(FS_XS)
         painter.setFont(font)
 
         nyquist = float(self._freqs[-1])
@@ -137,7 +143,7 @@ class _YAxisWidget(QWidget):
             last_y = y
 
             # Tick mark (right edge, shorter)
-            painter.setPen(QColor(150, 145, 140))
+            painter.setPen(QColor(AXIS_TICK))
             painter.drawLine(QPointF(w - 4, y), QPointF(w, y))
 
             # Label
@@ -147,7 +153,7 @@ class _YAxisWidget(QWidget):
                 label = f"{tick / 1000:.0f}k" if tick % 1000 == 0 else f"{tick / 1000:.1f}k"
             else:
                 label = f"{tick}"
-            painter.setPen(QColor(170, 166, 161))
+            painter.setPen(QColor(AXIS_TEXT))
             # Keep label within widget bounds at edges
             label_h = 14
             ly = max(0, min(y - label_h // 2, h - label_h))
@@ -182,13 +188,13 @@ class _XAxisWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        SIDE = 36
         left, right = SIDE, w - SIDE
         rw = right - left
         if rw <= 0:
             return
 
-        font = QFont("Segoe UI, sans-serif", 8)
+        font = QFont(FONT_FAMILY)
+        font.setPixelSize(FS_SM)
         painter.setFont(font)
 
         t_start = self._view_t0 * self._duration
@@ -245,11 +251,11 @@ class _XAxisWidget(QWidget):
             x = left + int(frac * rw)
 
             # Tick mark (top edge)
-            painter.setPen(QColor(150, 145, 140))
+            painter.setPen(QColor(AXIS_TICK))
             painter.drawLine(QPointF(x, 0), QPointF(x, 5))
 
             # Label
-            painter.setPen(QColor(170, 166, 161))
+            painter.setPen(QColor(AXIS_TEXT))
             painter.drawText(
                 QRectF(x - 35, 5, 70, h - 5),
                 Qt.AlignmentFlag.AlignCenter, _fmt_time(t),
@@ -325,12 +331,13 @@ class _ColorBarWidget(QWidget):
                           QRectF(0, 0, 1, self._bar_img.height()))
 
         # Border
-        painter.setPen(QColor(85, 83, 79))
+        painter.setPen(QColor(COLORBAR_BORDER))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(bar_x, pad_top, bar_w, h_eff)
 
         # dB ticks
-        font = QFont("Segoe UI, sans-serif", 7)
+        font = QFont(FONT_FAMILY)
+        font.setPixelSize(FS_XS)
         painter.setFont(font)
         DB_MIN_V = -120.0
         DB_MAX_V = 0.0
@@ -339,9 +346,9 @@ class _ColorBarWidget(QWidget):
         for db_val in db_ticks:
             frac = (db_val - DB_MAX_V) / (DB_MIN_V - DB_MAX_V)
             y = int(pad_top + frac * h_eff)
-            painter.setPen(QColor(150, 145, 140))
+            painter.setPen(QColor(AXIS_TICK))
             painter.drawLine(QPointF(bar_x + bar_w, y), QPointF(bar_x + bar_w + 3, y))
-            painter.setPen(QColor(170, 166, 161))
+            painter.setPen(QColor(AXIS_TEXT))
             # Keep label within widget bounds at edges
             label_h = 14
             ly = max(0, min(y - label_h // 2, h - label_h))
@@ -399,13 +406,13 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._progress_label.setFixedSize(200, 50)
         self._progress_label.setStyleSheet(
-            "QLabel {"
-            "  background: rgba(0, 0, 0, 180);"
-            "  border-radius: 8px;"
-            "  color: #A09D96;"
-            "  font-size: 13px;"
-            "  font-weight: 600;"
-            "}"
+            f"QLabel {{"
+            f"  background: {OVERLAY_BG};"
+            f"  border-radius: {CORNER_MD}px;"
+            f"  color: {TEXT_SEC};"
+            f"  font-size: {FS_LG}px;"
+            f"  font-weight: 600;"
+            f"}}"
         )
         self._progress_label.setVisible(False)
 
@@ -565,14 +572,15 @@ class SpectrogramGLWidget(QOpenGLWidget):
         ml, mr = 2, 2
         y = int(self.height() * (1.0 - frac))
 
-        color = QColor("#E0554D")
+        color = QColor(CUTOFF_LINE)
         pen = QPen(color)
         pen.setStyle(Qt.PenStyle.DashLine)
         pen.setWidth(1)
         painter.setPen(pen)
         painter.drawLine(ml, y, self.width() - mr - 1, y)
 
-        font = QFont("Segoe UI, sans-serif", 8)
+        font = QFont(FONT_FAMILY)
+        font.setPixelSize(FS_SM)
         painter.setFont(font)
         painter.setPen(color)
         label = f"Cutoff: {cutoff / 1000:.1f} kHz"
@@ -704,7 +712,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
     def _paint_cursor(self, painter: QPainter) -> None:
         if self._cursor_x < 0:
             return
-        pen = QPen(QColor(255, 255, 255, 80), 1, Qt.PenStyle.DashLine)
+        pen = QPen(QColor(CURSOR_LINE), 1, Qt.PenStyle.DashLine)
         painter.setPen(pen)
         painter.drawLine(self._cursor_x, 0, self._cursor_x, self.height())
 
