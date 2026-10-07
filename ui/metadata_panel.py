@@ -22,7 +22,7 @@ from ui.styles import (
     ACCENT, ACCENT_GRN, ACCENT_RED, ACCENT_AMB,
     TEXT_PRI, TEXT_SEC, TEXT_DIM,
     FONT_FAMILY, FS_XS, FS_BODY, FS_MD, FS_LG,
-    CORNER_SM, CORNER_LG,
+    CORNER_LG,
 )
 
 

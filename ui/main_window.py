@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import itertools
 import logging
-import os
 import sys
 import time
 from pathlib import Path
@@ -39,13 +38,12 @@ from ui.metadata_panel import MetadataPanel
 from ui.spectrogram_widget import SpectrogramGLWidget, _YAxisWidget, _XAxisWidget, _ColorBarWidget
 from ui.waveform_widget import WaveformWidget
 from ui.styles import (
-    BG_BASE, BG_SURFACE, BG_RAISED, BG_WELL, BG_CANVAS,
+    BG_BASE, BG_SURFACE, BG_RAISED, BG_CANVAS,
     BORDER_SUB, BORDER_MID,
     ACCENT, ACCENT_ALT, ACCENT_RED,
     PRIMARY_HOVER_A, PRIMARY_HOVER_B,
     TEXT_PRI, TEXT_SEC, TEXT_DIM,
-    FONT_FAMILY, FS_XS, FS_SM, FS_BODY, FS_MD, FS_LG, FS_XL,
-    CORNER_SM, CORNER_MD, CORNER_LG, SIDE, CARD_INSET,
+    FONT_FAMILY, FS_SM, FS_BODY, FS_MD, FS_LG, CORNER_SM, CORNER_LG, SIDE, CARD_INSET,
 )
 
 BTN_H = 32  # unified toolbar control height
