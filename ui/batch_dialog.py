@@ -8,7 +8,8 @@ from PyQt6.QtWidgets import (
 from lang import t
 from ui.styles import (
     BG_SURFACE, BG_RAISED, BG_WELL, BORDER_SUB, BORDER_MID,
-    TEXT_PRI, TEXT_SEC, ACCENT, ACCENT_HOVER, ACCENT_PRESSED, ACCENT_ALT,
+    TEXT_PRI, TEXT_SEC, ACCENT,
+    PRIMARY_HOVER_A, PRIMARY_HOVER_B,
     CORNER_SM, CORNER_LG, FS_SM, FS_BODY, FS_LG,
 )
 
@@ -44,7 +45,8 @@ class BatchProgressDialog(QDialog):
                 font-size: {FS_BODY}px;
             }}
             QProgressBar::chunk {{
-                background: {ACCENT};
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {PRIMARY_HOVER_A}, stop:1 {PRIMARY_HOVER_B});
                 border-radius: {CORNER_SM - 1}px;
             }}
             QPushButton {{
@@ -112,15 +114,14 @@ class BatchProgressDialog(QDialog):
         self._export_btn.setObjectName("primary")
         self._export_btn.setStyleSheet(f"""
             QPushButton#primary {{
-                background: {ACCENT};
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {PRIMARY_HOVER_A}, stop:1 {PRIMARY_HOVER_B});
                 border: none;
-                color: {ACCENT_ALT};
+                color: white;
                 font-weight: 600;
                 border-radius: {CORNER_SM}px;
                 padding: 6px 16px;
             }}
-            QPushButton#primary:hover {{ background: {ACCENT_HOVER}; }}
-            QPushButton#primary:pressed {{ background: {ACCENT_PRESSED}; }}
         """)
         btn_layout.addWidget(self._export_btn)
         layout.addLayout(btn_layout)

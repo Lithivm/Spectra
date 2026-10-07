@@ -9,6 +9,7 @@ a = Analysis(
     datas=[
         *collect_data_files('mutagen'),
         ('assets/logo.png', 'assets'),
+        ('assets/logo_mark.png', 'assets'),
         ('ui/shaders/spectrogram.vert', 'ui/shaders'),
         ('ui/shaders/spectrogram.frag', 'ui/shaders'),
     ],

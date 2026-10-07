@@ -140,7 +140,7 @@ JET_STOPS = [
 # Master table — maps palette name → color stops
 _STOPS_TABLE: dict[str, list[tuple[float, tuple[float, float, float]]]] = {
     "spectra": [
-        (0.00, (0.10, 0.11, 0.12)),
+        (0.00, (0.00, 0.00, 0.00)),
         (0.10, (0.00, 0.00, 0.02)),
         (0.24, (0.08, 0.01, 0.34)),
         (0.42, (0.37, 0.07, 0.43)),

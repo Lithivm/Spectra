@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import itertools
 import logging
+import os
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,8 +15,8 @@ from typing import Any
 
 from PyQt6.QtCore import QThread, Qt, pyqtSignal, QTimer, QRectF, QPointF, QSize
 from PyQt6.QtGui import (
-    QDragEnterEvent, QDropEvent, QColor, QPainter,
-    QKeySequence, QShortcut,
+    QDragEnterEvent, QDropEvent, QColor, QPainter, QPixmap,
+    QKeySequence, QShortcut, QGuiApplication,
 )
 
 from ui.anim import FloatAnim
@@ -39,13 +41,24 @@ from ui.waveform_widget import WaveformWidget
 from ui.styles import (
     BG_BASE, BG_SURFACE, BG_RAISED, BG_WELL, BG_CANVAS,
     BORDER_SUB, BORDER_MID,
-    ACCENT, ACCENT_HOVER, ACCENT_PRESSED, ACCENT_ALT, ACCENT_RED,
+    ACCENT, ACCENT_ALT, ACCENT_RED,
+    PRIMARY_HOVER_A, PRIMARY_HOVER_B,
     TEXT_PRI, TEXT_SEC, TEXT_DIM,
     FONT_FAMILY, FS_XS, FS_SM, FS_BODY, FS_MD, FS_LG, FS_XL,
     CORNER_SM, CORNER_MD, CORNER_LG, SIDE, CARD_INSET,
 )
 
-BTN_H = 30  # unified toolbar control height
+BTN_H = 32  # unified toolbar control height
+
+
+def _icon_dpr() -> float:
+    """Device pixel ratio for icon rendering.
+
+    Screen dpr is available from app start; a widget's own dpr can still be
+    1.0 before the window is first shown, so icons render at screen scale.
+    """
+    screen = QGuiApplication.primaryScreen()
+    return screen.devicePixelRatio() if screen else 1.0
 from lang import t, toggle_lang, on_lang_change
 
 if TYPE_CHECKING:
@@ -72,7 +85,7 @@ QStatusBar {{
     padding: 0 12px;
 }}
 QComboBox {{
-    background-color: {BG_WELL};
+    background-color: {BG_BASE};
     border: 1px solid {BORDER_MID};
     border-radius: {CORNER_SM}px;
     color: {TEXT_PRI};
@@ -98,7 +111,7 @@ QComboBox QAbstractItemView {{
     outline: none;
 }}
 QPushButton {{
-    background-color: {BG_WELL};
+    background-color: {BG_BASE};
     border: 1px solid {BORDER_MID};
     border-radius: {CORNER_SM}px;
     color: {TEXT_SEC};
@@ -115,16 +128,16 @@ QPushButton:pressed {{
     background-color: rgba(255, 255, 255, 0.12);
 }}
 QPushButton#primary {{
-    background: {ACCENT};
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {ACCENT}, stop:1 {ACCENT_ALT});
     border: none;
-    color: {ACCENT_ALT};
+    color: white;
     font-weight: 600;
 }}
 QPushButton#primary:hover {{
-    background: {ACCENT_HOVER};
-}}
-QPushButton#primary:pressed {{
-    background: {ACCENT_PRESSED};
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {PRIMARY_HOVER_A}, stop:1 {PRIMARY_HOVER_B});
+    color: white;
 }}
 QScrollBar:vertical {{
     background: transparent;
@@ -161,34 +174,41 @@ def _shadow(radius: int = 24, opacity: int = 70) -> QGraphicsDropShadowEffect:
 
 _card_ids = itertools.count()
 
-def _card(radius: int = CORNER_LG, inset: int | None = None) -> QWidget:
+def _card(radius: int = CORNER_LG) -> QWidget:
     name = f"_card_{next(_card_ids)}"
     w = QWidget()
     w.setObjectName(name)
-    if inset is not None:
-        # 内衬 well：边框与内容之间垫一圈 BG_CANVAS，内容区像"沉进去"的窗格
-        w.setStyleSheet(f"""
-            #{name} {{
-                background-color: {BG_SURFACE};
-                border: {inset}px solid {BG_CANVAS};
-                border-radius: {radius}px;
-            }}
-        """)
-    else:
-        w.setStyleSheet(f"""
-            #{name} {{
-                background-color: {BG_SURFACE};
-                border: 1px solid {BORDER_SUB};
-                border-radius: {radius}px;
-            }}
-        """)
+    w.setStyleSheet(f"""
+        #{name} {{
+            background-color: {BG_SURFACE};
+            border: 1px solid {BORDER_SUB};
+            border-radius: {radius}px;
+        }}
+    """)
     return w
+
+
+def _toolbar_btn_qss() -> str:
+    """Unified toolbar button look — BG_BASE fill, matching the packaged build."""
+    return (
+        f"QPushButton {{ color: {TEXT_PRI}; background: {BG_BASE};"
+        f" border: 1px solid {BORDER_MID}; border-radius: {CORNER_SM}px; }}"
+        f" QPushButton:hover {{ border-color: {ACCENT}; }}"
+    )
 
 
 class _RootWidget(QWidget):
     """Root container — provides native edge-resize for the frameless window."""
 
     _MARGIN = 8  # px from window edge that triggers resize
+
+    def paintEvent(self, event) -> None:
+        # Explicitly fill BG_BASE. A bare QWidget whose stylesheet sets only
+        # `background:` (no border) is NOT auto-filled by Qt — the buffer stays
+        # black. Cards render because their stylesheet carries a border.
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(BG_BASE))
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -216,11 +236,13 @@ class _RootWidget(QWidget):
 class _TitleBarCard(QWidget):
     """Toolbar card that doubles as the frameless window's title bar.
 
-    Drag on empty space (or the brand label) to move; double-click to maximize/restore.
+    Drag on any non-interactive area to move (empty space, labels and separators
+    are mouse-transparent so events fall through here); double-click to
+    maximize/restore. Interactive children (buttons, combos) keep their own events.
     """
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and self.childAt(event.position().toPoint()) is None:
+        if event.button() == Qt.MouseButton.LeftButton:
             win = self.window()
             self._drag_offset = event.globalPosition().toPoint() - win.frameGeometry().topLeft()
             self._dragging = True
@@ -233,12 +255,11 @@ class _TitleBarCard(QWidget):
         self._dragging = False
 
     def mouseDoubleClickEvent(self, event) -> None:
-        if self.childAt(event.position().toPoint()) is None:
-            win = self.window()
-            if win.isMaximized():
-                win.showNormal()
-            else:
-                win.showMaximized()
+        win = self.window()
+        if win.isMaximized():
+            win.showNormal()
+        else:
+            win.showMaximized()
 
 
 class _PlaybackSlider(QWidget):
@@ -563,6 +584,7 @@ class MainWindow(QMainWindow):
         self._mode = "standard"
 
         self._slider_dragging = False
+        self._logo_ok = False  # brand logo loaded from assets/logo.png
 
         self._playback = PlaybackEngine(self)
         self._playback_timer = QTimer(self)
@@ -589,33 +611,43 @@ class MainWindow(QMainWindow):
         root = _RootWidget()
         root.setStyleSheet(f"background: {BG_BASE};")
         self.setCentralWidget(root)
-        root_layout = QHBoxLayout(root)
+        root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(12, 12, 12, 12)
         root_layout.setSpacing(10)
+
+        # 顶部工具条 — 贯穿整个窗口宽度，右侧按钮落在窗口右边缘
+        root_layout.addWidget(self._make_toolbar())
+
+        # 下部：左侧卡片 + 右侧元数据面板
+        bottom_layout = QHBoxLayout()
+        bottom_layout.setSpacing(10)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
 
         # 左侧
         left_layout = QVBoxLayout()
         left_layout.setSpacing(10)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
-        left_layout.addWidget(self._make_toolbar())
-
-        # 波形卡片 — 内衬 well（无边框，与声谱图卡同宽同色）
-        wave_card = _card(inset=CARD_INSET)
+        # 波形卡片 — left/right margins align with spectrogram (y-axis + colorbar)
+        wave_card = _card()
         wave_card.setFixedHeight(130)
         wl = QVBoxLayout(wave_card)
-        wl.setContentsMargins(0, 0, 0, 0)
+        wl.setContentsMargins(SIDE + CARD_INSET, CARD_INSET, SIDE + CARD_INSET, CARD_INSET)
         self._wave = WaveformWidget()
         wl.addWidget(self._wave)
-        self._wave_card = wave_card
         left_layout.addWidget(wave_card)
 
-        # 频谱卡片 — 内衬 well
-        spec_card = _card(inset=CARD_INSET)
-        self._spec_card = spec_card
+        # 频谱卡片 — 内衬 well（_inner: bg=BG_CANVAS，视觉沉入）
+        spec_card = _card()
         sl = QVBoxLayout(spec_card)
-        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setContentsMargins(CARD_INSET, CARD_INSET, CARD_INSET, CARD_INSET)
         sl.setSpacing(0)
+
+        # 内衬 well：_inner 承载 grid，bg=BG_CANVAS（视觉"沉入"卡片）
+        _inner = QWidget()
+        _inner.setObjectName("spec_well")
+        _inner.setStyleSheet(
+            f"background-color: {BG_CANVAS}; border-radius: {CORNER_LG - CARD_INSET}px;")
 
         # ---- Grid: filename | Y-axis | spectrogram | colorbar | X-axis ----
         _grid = QGridLayout()
@@ -675,16 +707,19 @@ class MainWindow(QMainWindow):
         self._x_axis.setFixedHeight(SIDE)
         _grid.addWidget(self._x_axis, 3, 0, 1, 3)
 
-        sl.addLayout(_grid, 0)
+        _inner.setLayout(_grid)
+        sl.addWidget(_inner, 0)
 
         left_layout.addWidget(spec_card, stretch=1)
 
-        root_layout.addLayout(left_layout, stretch=3)
+        bottom_layout.addLayout(left_layout, stretch=3)
 
-        # 右侧元数据面板
+        # 右侧元数据面板 — 从工具条下方开始，与左列顶部对齐
         self._meta = MetadataPanel()
         self._meta.setFixedWidth(310)
-        root_layout.addWidget(self._meta)
+        bottom_layout.addWidget(self._meta)
+
+        root_layout.addLayout(bottom_layout, stretch=1)
 
         self._spec.set_palette("spectra")
 
@@ -718,6 +753,45 @@ class MainWindow(QMainWindow):
 
         on_lang_change(self._retranslate)
 
+    def _load_brand_logo(self) -> None:
+        """Replace brand text with the transparent S-mark (assets/logo_mark.png).
+
+        Falls back to assets/logo.png, then plain "Spectra" text if the
+        asset is missing/unreadable.
+        DPR-aware: pixmap physical size = 44 * devicePixelRatio.
+        """
+        self._brand_label.setText("Spectra")
+        pm = QPixmap()
+        if hasattr(sys, "frozen"):
+            base = Path(getattr(sys, "_MEIPASS", "."))
+        else:
+            base = Path(__file__).resolve().parent.parent
+        for cand in (
+            base / "assets" / "logo_mark.png",
+            Path("assets") / "logo_mark.png",
+            base / "assets" / "logo.png",
+            Path("assets") / "logo.png",
+        ):
+            if not cand.exists():
+                continue
+            if QPixmap(str(cand)).isNull():
+                break
+            pm = QPixmap(str(cand))
+            break
+        if pm.isNull():
+            self._logo_ok = False
+            return
+        dpr = max(self.devicePixelRatio() or 1.0, _icon_dpr())
+        target = int(round(44 * dpr))
+        # Scale in plain device pixels first; stamping dpr beforehand makes
+        # scaled() work in logical coordinates and the result comes out wrong.
+        pm = pm.scaled(target, target, Qt.AspectRatioMode.KeepAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
+        if dpr != 1.0:
+            pm.setDevicePixelRatio(dpr)
+        self._brand_label.setPixmap(pm)
+        self._logo_ok = True
+
     def _make_toolbar(self) -> QWidget:
         card = _TitleBarCard()
         name = f"_toolbar_{next(_card_ids)}"
@@ -728,21 +802,11 @@ class MainWindow(QMainWindow):
                 border: 1px solid {BORDER_SUB};
                 border-radius: {CORNER_LG}px;
             }}
-            #{name} QPushButton#primary {{
-                background: {BG_BASE}; color: {TEXT_PRI}; border: none;
-            }}
         """)
-        card.setFixedHeight(52)
+        card.setFixedHeight(64)
         layout = QHBoxLayout(card)
-        layout.setContentsMargins(16, 0, 16, 0)
+        layout.setContentsMargins(10, 0, 16, 0)
         layout.setSpacing(12)
-
-        # Logo（声谱条小图标）— 品牌区作为标题栏拖拽区（鼠标事件穿透到 _TitleBarCard）
-        self._logo_label = QLabel()
-        self._logo_label.setPixmap(render_icon("logo", 24).pixmap(24, 24))
-        self._logo_label.setStyleSheet("background: transparent; border: none;")
-        self._logo_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(self._logo_label)
 
         self._brand_label = QLabel("Spectra")
         self._brand_label.setStyleSheet(f"""
@@ -756,6 +820,9 @@ class MainWindow(QMainWindow):
         self._brand_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(self._brand_label)
 
+        # Logo — 用 .exe 同款图标 assets/logo.png 替换品牌文字；失败保留文字
+        self._load_brand_logo()
+
         sep0 = QFrame()
         sep0.setFrameShape(QFrame.Shape.VLine)
         sep0.setStyleSheet(f"background: {BORDER_SUB}; border: none; max-width: 1px;")
@@ -763,9 +830,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(sep0)
 
         self._open_btn = QPushButton(t("打开文件", "Open File"))
-        self._open_btn.setObjectName("primary")
         self._open_btn.setFixedHeight(BTN_H)
         self._open_btn.setFixedWidth(100)
+        self._open_btn.setStyleSheet(_toolbar_btn_qss())
         self._open_btn.clicked.connect(self._on_open_file)
         layout.addWidget(self._open_btn)
 
@@ -776,19 +843,10 @@ class MainWindow(QMainWindow):
 
         # Play / Pause
         self._play_btn = QPushButton()
-        self._play_btn.setIcon(render_icon("play", 18))
+        self._play_btn.setIcon(render_icon("play", 18, dpr=_icon_dpr()))
         self._play_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._play_btn.setFixedSize(36, BTN_H)
-        self._play_btn.setStyleSheet(f"""
-            QPushButton {{
-                font-size: 14px; font-weight: bold;
-                color: {TEXT_PRI}; background: {BG_WELL};
-                border: 1px solid {BORDER_MID}; border-radius: {CORNER_SM}px;
-                padding: 0px 0px 2px 0px;
-            }}
-            QPushButton:hover {{ border-color: {ACCENT}; background: {BORDER_SUB}; }}
-            QPushButton:pressed {{ background: {BG_BASE}; }}
-        """)
+        self._play_btn.setStyleSheet(_toolbar_btn_qss())
         self._play_btn.clicked.connect(self._on_playback_toggle)
         layout.addWidget(self._play_btn)
 
@@ -862,39 +920,52 @@ class MainWindow(QMainWindow):
 
         self._save_btn = QPushButton(t("保存PNG", "Save PNG"))
         self._save_btn.setFixedHeight(BTN_H)
+        self._save_btn.setStyleSheet(_toolbar_btn_qss())
         self._save_btn.clicked.connect(self._on_save_screenshot)
         layout.addWidget(self._save_btn)
 
         # language toggle
         self._lang_btn = QPushButton("中/EN")
         self._lang_btn.setFixedHeight(BTN_H)
-        self._lang_btn.setMinimumWidth(60)
+        self._lang_btn.setMinimumWidth(64)
+        self._lang_btn.setStyleSheet(_toolbar_btn_qss())
         self._lang_btn.clicked.connect(self._on_toggle_lang)
         layout.addWidget(self._lang_btn)
 
-        # 窗口控制按钮（frameless 标题栏）
-        for text, slot in [("\u2014", self._on_minimize), ("\u25A1", self._on_maximize_toggle)]:
-            b = QPushButton(text)
+        # 窗口控制按钮（frameless 标题栏）— SVG 图标，不依赖字体渲染
+        win_btn_qss = (
+            f"QPushButton {{ background: {BG_BASE}; border: 1px solid {BORDER_MID};"
+            f" border-radius: {CORNER_SM}px; }}"
+            f" QPushButton:hover {{ background: {BORDER_SUB}; }}"
+        )
+        for name, slot in [("minimize", self._on_minimize), ("maximize", self._on_maximize_toggle)]:
+            b = QPushButton()
+            b.setIcon(render_icon(name, 14, dpr=_icon_dpr()))
+            b.setIconSize(QSize(14, 14))
             b.setFixedSize(30, BTN_H)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setStyleSheet(
-                f"QPushButton {{ background: transparent; border: none; color: {TEXT_SEC};"
-                f" font-size: {FS_MD}px; }}"
-                f" QPushButton:hover {{ background: rgba(255, 255, 255, 0.08); color: {TEXT_PRI}; }}"
-            )
+            b.setStyleSheet(win_btn_qss)
             b.clicked.connect(slot)
             layout.addWidget(b)
 
-        close_btn = QPushButton("\u00D7")
+        close_btn = QPushButton()
+        close_btn.setIcon(render_icon("close", 13, dpr=_icon_dpr()))
+        close_btn.setIconSize(QSize(13, 13))
         close_btn.setFixedSize(30, BTN_H)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.setStyleSheet(
-            f"QPushButton {{ background: transparent; border: none; color: {TEXT_SEC};"
-            f" font-size: {FS_MD}px; }}"
-            f" QPushButton:hover {{ background: {ACCENT_RED}; color: white; }}"
+            f"QPushButton {{ background: {BG_BASE}; border: 1px solid {BORDER_MID};"
+            f" border-radius: {CORNER_SM}px; }}"
+            f" QPushButton:hover {{ background: {ACCENT_RED}; }}"
         )
         close_btn.clicked.connect(self.close)
         layout.addWidget(close_btn)
+
+        # 装饰性控件（标签/分隔线）鼠标穿透 → 标题栏拖拽区覆盖整个非交互区域
+        for w in (self._play_label, self._pal_label, self._mode_label,
+                  self._yscale_label, self._fft_label,
+                  sep0, sep1, sep2, sep3, sep4):
+            w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         self._setup_shortcuts_and_tooltips()
 
@@ -1179,9 +1250,9 @@ class MainWindow(QMainWindow):
     def _on_playback_state(self, state: str) -> None:
         actual = self._playback.state
         if actual == "playing":
-            self._play_btn.setIcon(render_icon("pause", 18))
+            self._play_btn.setIcon(render_icon("pause", 18, dpr=_icon_dpr()))
         else:
-            self._play_btn.setIcon(render_icon("play", 18))
+            self._play_btn.setIcon(render_icon("play", 18, dpr=_icon_dpr()))
             if actual == "stopped":
                 self._progress_slider.setValue(0)
             # 停止/暂停时，若鼠标不在声谱区，清除光标
@@ -1246,11 +1317,11 @@ class MainWindow(QMainWindow):
         self._cursor_label.adjustSize()
         # Position: center on cursor x, vertically centered in filename row
         lw = self._cursor_label.width()
-        label_x = SIDE + px - lw // 2
+        label_x = SIDE + CARD_INSET + px - lw // 2
         # Clamp so label stays within spectrogram area
         spec_right = self._spec.mapToParent(self._spec.rect().topRight()).x()
-        label_x = max(SIDE, min(label_x, spec_right - lw))
-        label_y = (SIDE - self._cursor_label.height()) // 2
+        label_x = max(SIDE + CARD_INSET, min(label_x, spec_right - lw))
+        label_y = (SIDE + CARD_INSET - self._cursor_label.height()) // 2
         self._cursor_label.move(label_x, max(0, label_y))
         self._cursor_label.show()
         self._filename_widget.hide()
@@ -1349,7 +1420,10 @@ class MainWindow(QMainWindow):
 
     def _retranslate(self, _lang: str | None = None) -> None:
         self._update_tooltips()
-        self._brand_label.setText("Spectra")
+        if self._logo_ok:
+            pass  # logo 已替换品牌文字，不覆盖
+        else:
+            self._brand_label.setText("Spectra")
         self._open_btn.setText(t("打开文件", "Open File"))
         self._save_btn.setText(t("保存PNG", "Save PNG"))
         self._pal_label.setText(t("调色板", "Palette"))

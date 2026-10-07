@@ -382,6 +382,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMouseTracking(True)
+        self._floor_np = np.zeros(3, dtype=np.float32)
         self._data: np.ndarray | None = None       # (n_freqs, n_frames) float32 dB
         self._tex_id: int | None = None
         self._gl_program: int | None = None
@@ -510,8 +511,8 @@ class SpectrogramGLWidget(QOpenGLWidget):
         self._curve_lo = cp["lo"]
         self._curve_span = cp["span"]
         new_np = np.ascontiguousarray(build_lut_np(name)[:, :4])
-        # 平底同步：floor 跟 LUT 走（首行 RGB）
-        self._lut_floor = tuple(int(v) / 255.0 for v in new_np[0][:3])
+        # 平底同步：floor 跟 LUT 走（首行 RGB，0-1 float）
+        self._floor_np = new_np[0][:3].astype(np.float32) / 255.0
         if self._gl_program is None or self._lut_tex_id is None:
             # GL 未初始化 — 走首次上传路径
             self._lut_np = new_np
@@ -659,7 +660,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
         lut_np = build_lut_np(self._palette_name)
         self._lut_np = np.ascontiguousarray(lut_np[:, :4])
         # 平底同步：floor = LUT 首行 RGB（spectra → BG_CANVAS；标准配色 → 各自信色底）
-        self._lut_floor = tuple(int(v) / 255.0 for v in lut_np[0][:3])
+        self._floor_np = lut_np[0][:3].astype(np.float32) / 255.0
 
     # ── OpenGL lifecycle ────────────────────────────────────────────
 
@@ -704,7 +705,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
     def initializeGL(self) -> None:
         # Clean up old resources if context was recreated
         self._cleanup_gl(need_context=False)
-        glClearColor(0, 0, 0, 1)
+        glClearColor(*self._floor_np.tolist(), 1.0)
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
 
         vert_src = _load_shader("spectrogram.vert")
@@ -1095,6 +1096,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
 
         glViewport(0, 0, w, h)
         glDisable(GL_SCISSOR_TEST)
+        glClearColor(*self._floor_np.tolist(), 1.0)
         glClear(GL_COLOR_BUFFER_BIT)
         glEnable(GL_SCISSOR_TEST)
         glScissor(ml, mb, rw, rh)
@@ -1134,7 +1136,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
         glUniform1f(self._u_curve_power, self._curve_power)
         glUniform1f(self._u_curve_lo, self._curve_lo)
         glUniform1f(self._u_curve_span, self._curve_span)
-        glUniform3f(self._u_floor, *self._lut_floor)
+        glUniform3f(self._u_floor, *self._floor_np.tolist())
 
         glBindVertexArray(self._vao)
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)

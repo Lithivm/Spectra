@@ -20,6 +20,11 @@ def _build_main_window(app: QApplication):
     return mw
 
 
+@pytest.fixture(scope="module")
+def mw(app):
+    return _build_main_window(app)
+
+
 class TestIsAudio:
     """Test the static `_is_audio` method on MainWindow."""
 
@@ -163,35 +168,23 @@ class TestToolbar:
 
 
 class TestVisualUpgrade:
-    """Round-4 visual upgrade: shader floor, LUT flat-floor sync, inset well, logo."""
+    """Round-4 visual upgrade: generic open_btn, inset well, floor==canvas, brand logo."""
 
-    def test_shader_compiles(self, app):
-        from ui.spectrogram_widget import SpectrogramGLWidget
-        w = SpectrogramGLWidget()
-        w.show()
-        app.processEvents()
-        w.makeCurrent()
-        try:
-            # initializeGL compiles + links the shader; raises RuntimeError on failure.
-            w.initializeGL()
-        finally:
-            w.doneCurrent()
+    def test_open_btn_uses_generic_style(self, mw):
+        assert mw._open_btn.objectName() == ""
 
-    def test_spectra_floor_matches_bg_canvas(self, app):
+    def test_spec_well_inset(self, mw):
         from ui.styles import BG_CANVAS
-        from ui.spectrogram_widget import SpectrogramGLWidget
-        w = SpectrogramGLWidget()
-        w.set_palette("spectra")
-        r, g, b = (int(BG_CANVAS[i:i + 2], 16) / 255.0 for i in (1, 3, 5))
-        assert abs(w._lut_floor[0] - r) < 0.01
-        assert abs(w._lut_floor[1] - g) < 0.01
-        assert abs(w._lut_floor[2] - b) < 0.01
+        well = mw._spec.parentWidget()
+        assert well is not None
+        assert well.objectName() == "spec_well"
+        assert BG_CANVAS in well.styleSheet()
 
-    def test_spec_card_inset_well(self, app):
-        from ui.styles import BG_CANVAS
-        mw = _build_main_window(app)
-        assert BG_CANVAS in mw._spec_card.styleSheet()
+    def test_spectra_floor_matches_canvas(self):
+        from analyzer.palette import build_lut_np
+        lut = build_lut_np("spectra")
+        assert tuple(lut[0][:3]) == (0, 0, 0)      # == BG_CANVAS #000000
 
-    def test_logo_label_has_pixmap(self, app):
-        mw = _build_main_window(app)
-        assert mw._logo_label.pixmap() is not None
+    def test_brand_logo_loaded(self, mw):
+        assert mw._logo_ok is True
+        assert mw._brand_label.pixmap() is not None

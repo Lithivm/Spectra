@@ -8,7 +8,7 @@ BG_BASE = "#222526"      # window root
 BG_SURFACE = "#303436"  # cards / panels (raised)
 BG_RAISED = "#292d2e"   # hover on surface rows
 BG_WELL = "#1a1d1f"     # sunken wells: progress tracks, code areas, icon buttons
-BG_CANVAS = "#1a1d1f"   # spectrogram canvas == LUT flat floor (must stay in sync)
+BG_CANVAS = "#000000"   # spectrogram canvas == LUT flat floor (must stay in sync)
 CARD_INSET = 4          # inset well between card border and content
 
 # ── Borders ───────────────────────────────────────────────────────────────────
@@ -17,9 +17,9 @@ BORDER_MID = "#3d4143"  # inputs / dividers
 
 # ── Accents ───────────────────────────────────────────────────────────────────
 ACCENT = "#F0EDE8"      # warm off-white — primary action & highlights
-ACCENT_HOVER = "#FFFFFF"    # primary hover (brighter)
-ACCENT_PRESSED = "#E2DFD8"  # primary pressed (darker)
 ACCENT_ALT = "#1C1B19"     # text on accent surfaces
+PRIMARY_HOVER_A = "#E0B55A"  # gold CTA / progress gradient (packaged build)
+PRIMARY_HOVER_B = "#C89A3A"
 
 # ── Status ────────────────────────────────────────────────────────────────────
 ACCENT_GRN = "#34d399"   # success / ok
@@ -40,7 +40,7 @@ COLORBAR_BORDER = "#55534F"
 CURSOR_LINE = "#FFFFFF"     # hover cursor line (alpha applied at use site)
 PLAY_CURSOR = "#F0EDE8"    # playback position line
 CUTOFF_LINE = ACCENT_RED   # high-freq cutoff annotation
-WAVEFORM_LINE = ACCENT     # waveform envelope (alpha applied at use site)
+WAVEFORM_LINE = "#e8e6e2"  # waveform envelope (alpha applied at use site)
 
 # ── Overlays & progress ───────────────────────────────────────────────────────
 OVERLAY_BG = "rgba(0, 0, 0, 140)"    # loading overlay scrim
