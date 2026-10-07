@@ -132,7 +132,7 @@ fragColor = mix(cA, cB, u_lut_mix);   // LUT 交叉淡化
 - `get_curve_params(palette_name)` — 返回 `{"power", "lo", "span"}` dict
 - 所有配色通过 `_build_lut_from_stops` 从硬编码色标（`_STOPS_TABLE`）线性插值，零外部依赖
 - dB 范围：-120 到 0 dB
-- **spectra 平底**：`_STOPS_TABLE["spectra"]` 首点 = `BG_CANVAS`（#1a1d1f），与 styles token 同步；floor 由 `_rebuild_lut`/`set_palette` 取 LUT 首行 RGB，经 `u_floor` uniform 进 shader
+- **spectra 平底**：`_STOPS_TABLE["spectra"]` 首点 = `BG_CANVAS`（#000000 纯黑），与 styles token 同步；floor 由 `_rebuild_lut`/`set_palette` 取 LUT 首行 RGB，经 `u_floor` uniform 进 shader
 
 #### 调参方式
 
@@ -203,8 +203,8 @@ fragColor = mix(cA, cB, u_lut_mix);   // LUT 交叉淡化
 - `FramelessWindowHint` + `_RootWidget`（8px 边缘热区 → `windowHandle().startSystemResize(edges)`）+ `_TitleBarCard`（空白处拖拽移动、双击最大化/还原）
 - 窗口控制按钮（—/□/×）在 toolbar 尾部；Win11 圆角经 ctypes `DwmSetWindowAttribute`（showEvent，失败静默回退）
 - 快捷键：Ctrl+O 打开、Space 播放/暂停（焦点在按钮/下拉框时跳过）、Ctrl+S 保存 PNG；tooltip 带快捷键提示
-- `ui/icons.py`：内联 SVG 模板 + `render_icon(name, size, color)`（QSvgRenderer→QPixmap→QIcon），零资源文件依赖
-- **Logo**：toolbar 品牌区前加 24px `logo` 图标（声谱条小图标，inline SVG 模板，复用 render_icon）
+- `ui/icons.py`：内联 SVG 模板 + `render_icon(name, size, color, dpr=1.0)`（QSvgRenderer→QImage 物理像素栅格化→QPixmap 盖 dpr 戳→QIcon），HiDPI/缩放屏下图标不糊；dpr 取 `_icon_dpr()`（屏幕级，widget 未 show 前自身 dpr 不可靠）
+- **Logo**：`_load_brand_logo()` 用 `assets/logo_mark.png`（透明 S-mark，44px×dpr），缺失时回退 `assets/logo.png` → 纯文本 "Spectra"；frozen/开发双路径查找
 - **cursor label**：透明底（`background: transparent`）+ 保留边框，浮在声谱图上方不遮挡画布
 
 ---
@@ -346,7 +346,8 @@ analyzer/core.py
 
 ---
 
-> 最后更新: 2026-10-05 (视觉升级 Round 4：spectra 平底黑→BG_CANVAS(#1a1d1f) + `u_floor` uniform（硬/软门限 fade 到 floor 而非纯黑）、wave_card/spec_card 内衬 well(4px BG_CANVAS,无边框)、toolbar logo(声谱条 SVG)、cursor label 透明底、open_btn 显式样式不依赖全局)
+> 最后更新: 2026-10-07 (视觉升级 Round 5：画布/平底纯黑 #000000（BG_CANVAS + spectra LUT 首点同步）、主按钮金色渐变 hover/pressed(PRIMARY_HOVER_A/B)、图标 HiDPI dpr 渲染(render_icon + _icon_dpr)、窗口控制按钮描边式 SVG、品牌 logo 改用 assets/logo_mark.png(S-mark, DPR-aware)、toolbar 按钮 BG_BASE 填充 BTN_H=32)
+> 上一更新: 2026-10-05 (视觉升级 Round 4：spectra 平底黑→BG_CANVAS(#1a1d1f) + `u_floor` uniform（硬/软门限 fade 到 floor 而非纯黑）、wave_card/spec_card 内衬 well(4px BG_CANVAS,无边框)、toolbar logo(声谱条 SVG)、cursor label 透明底、open_btn 显式样式不依赖全局)
 > 上一更新: 2026-07-14 (UI 现代化重构 Phase 0–4：design token 统一、无边框窗口+SVG图标+快捷键、动画系统 FloatAnim（缩放缓动/LUT交叉淡化/浮层淡入淡出/滑块hover/元数据错峰）)
 > 上一更新: 2026-06-16 (配色方案系统重构 + 削波/高频检测算法重写：多声道削波、位深感知、Welch PSD、多因子置信度)
 > 基于文件: main.py, ui/main_window.py, analyzer/core.py, analyzer/_state.py, analyzer/spectrum.py, analyzer/quality.py, analyzer/load.py, analyzer/metadata.py, analyzer/batch.py, analyzer/palette.py, ui/spectrogram_widget.py, ui/metadata_panel.py, ui/waveform_widget.py, ui/playback_engine.py, ui/batch_dialog.py, ui/styles.py, ui/shaders/spectrogram.vert, ui/shaders/spectrogram.frag, lang.py, spectra.spec
