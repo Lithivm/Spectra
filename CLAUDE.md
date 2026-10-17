@@ -47,7 +47,7 @@ src/spectra/{__main__.py, lang.py, backend/, frontend/, assets/}
 
 ### 2.1 模块拆分
 
-`src/spectra/backend/core.py` 是门面，分析部分拆为五个模块：
+`src/spectra/backend/core.py` 是门面，下面六个模块（其中 `scales.py` 只是刻度换算）：
 
 | 模块                       | 职责                                                                                                  |
 | -------------------------- | ------------------------------------------------------------------------------------- |
@@ -55,6 +55,7 @@ src/spectra/{__main__.py, lang.py, backend/, frontend/, assets/}
 | `src/spectra/backend/spectrum.py`  | `_SpectrumMixin` — STFT、多分辨率、相位重分配、mel、MFCC、流式渲染                            |
 | `src/spectra/backend/quality.py`   | `_QualityMixin` — 削波、过采样检测、TT DR、LUFS、true peak                                |
 | `src/spectra/backend/loudness.py`  | EBU R128 原生采样率实现（K 权重 + 分块流式 + polyphase FIR 真峰值），被 quality 调用            |
+| `src/spectra/backend/scales.py`    | Slaney mel 刻度（Hz↔mel 分段），CPU 侧唯一实现；shader 的 mel 分支是它的镜像                    |
 | `src/spectra/backend/core.py`       | `AudioAnalyzer` 门面类，继承两个 mixin，保留 load/waveform/info                            |
 
 外部一律走门面：`from spectra.backend.core import AudioAnalyzer`（UI 和测试都只认这个）。
@@ -94,7 +95,7 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
 - **动态范围（TT DR）** — K 加权 300 ms 窗（无重叠）逐块响度的 P95 − P10，**未门控**，`dr_basis = "TT_DR_300ms_ungated"`；LRA 是另一个读数（3 s 块 + 门控），两者不再混为一谈
 - **LUFS (EBU R128)** — `src/spectra/backend/loudness.py`：K 权重在**原生采样率**上设计（不再降到 12 kHz —— 12 kHz 的 Nyquist 只有 6 kHz，高架中心 16.8 kHz 整段被削）；分块 + cumsum，滤波器状态跳块连续、块网格按 hop 对齐，与整段直算一致（maxdiff 1e-13）；门控用绝对 −70 / 相对 −10 LU，channel gain 按 `(channels, samples)` 广播
 - **True Peak** — polyphase FIR（4× 过采样）全频带，分块与整段同 taps 结果完全一致；sr < 16 kHz 返回 None
-- **mel 口径不统一（P3，未决）** — 特征侧（`melspectrogram_db`、`mel_frequencies`）用 librosa 默认 **Slaney**（1 kHz 以下线性拟合、以上对数渐近），Y 轴刻线与 cursor 读数也走 `librosa.hz_to_mel`（Slaney）；但 shader 的像素→频率映射是单式 **HTK** `2595·log10(1+f/700)`。两式只在 1 kHz 处相等，1 kHz 以下 Slaney 比 HTK 缓（100 Hz：Slaney 1.5 mel vs HTK 150.5），1 kHz 以上 Slaney 比 HTK 陡。后果是「标签」与「它所在像素实际渲染的频率」对不上：20 Hz–22.05 kHz 全量程最大错位 ~4% 轴高（350 px 轴上约 14 px，峰值在 3 kHz 附近；200 Hz 约 7 px）。mel 滤波器组同样受影响（n_mels=64：band 1 中心 Slaney 83.2 Hz / HTK 60.6 Hz）。统一到任一侧即可：CPU 侧全部 `htk=True`（librosa 0.11 的 `melspectrogram(**kwargs)` 能透传 `htk`），或把 shader 改成 Slaney 分段式
+- **mel 口径：已统一为 Slaney（2026-10-17 定）** — CPU 侧唯一实现是 `src/spectra/backend/scales.py`（分段：1 kHz 以下线性、每 mel 66.67 Hz；以上对数，`logstep = ln(6.4)/27`，1 kHz 处 mel = 15），Y 轴刻线与 cursor 读数都走它（不再 import librosa）；shader 的 mel 分支是它的 GLSL 镜像；mel 滤波器组用 librosa 默认（= Slaney）→ 三者同一口径。选 Slaney 的理由：它的形状（低频等宽段 + 高频对数段）与临界带宽同构，比 HTK 单式更贴基准（相对 1 kHz 的每单位带宽倍数：2 kHz 2.00 vs Bark 1.98、10 kHz 10.0 vs 13.7；HTK 是 1.59 / 6.29），高频空间更大、利于看截止与 ringing。代价：1 kHz 处有个折点（两侧斜率差 3%）；与 torchaudio（默认 HTK）对拍 MFCC 要显式 `mel_scale='slaney'`，还要连滤波器组归一化（librosa 按带宽归一、torchaudio 默认不归一）一起固定。常量漂移由 `tests/test_scales.py` 钉死
 
 #### 性能优化策略
 
@@ -179,7 +180,7 @@ fragColor = mix(cA, cB, u_lut_mix);   // LUT 交叉淡化
 #### 频率轴模式
 
 - `u_scale_mode` uniform：0=linear, 1=log, 2=mel, 3=bark
-- mel 映射：`mel = 2595 * log10(1 + f/700)`（HTK 单式）——注意 CPU 侧（刻线、cursor、mel 滤波器组）用的是 librosa 的 Slaney，两者在 1 kHz 以下形状不同，详见 2.4 的 mel 口径条目
+- mel 映射：Slaney 分段（`f < 1000 → f / (200/3)`；否则 `15 + ln(f/1000) / (ln(6.4)/27)`）——必须与 `src/spectra/backend/scales.py` 同常量（刻线、cursor 都走 `scales.mel_frac`，见 2.4 的 mel 条目）
 - bark 映射：Zwicker & Fastl 心理声学模型，Newton-Raphson 4 次迭代
 
 #### 坐标轴组件
@@ -296,6 +297,7 @@ spectra.frontend.main_window
   ├── spectra.backend.load (load_audio, is_audio_file)
   ├── spectra.backend.batch (flatten_analysis, export_batch_csv)
   ├── spectra.backend.palette (PALETTE, build_lut_np, is_spectra, get_curve_params)
+  ├── spectra.backend.scales (Slaney mel：hz_to_mel / mel_to_hz / mel_frac)
   ├── spectra.lang (t, toggle_lang, on_lang_change)
   ├── spectra.frontend.spectrogram_widget (SpectrogramGLWidget, 轴/色条)
   ├── spectra.frontend.waveform_widget (WaveformWidget)
@@ -361,11 +363,12 @@ spectra.backend.core
    - **可能的解决方案**：收窄 dB 范围（-100 或 -90）减少暗区覆盖、研究 Spek 的具体配色实现
    - 影响范围：`src/spectra/backend/palette.py`、`src/spectra/frontend/spectrogram_widget.py`、`src/spectra/frontend/shaders/spectrogram.frag`
 
-7. **TODO: mel 口径统一（P3）** — 见 2.4 的 mel 条目：shader 用 HTK，librosa 侧用 Slaney，两者只在 1 kHz 相等，1 kHz 以下错位最大 ~4% 轴高。选口径后改三处即可：`spectrogram_widget` 的刻线（~125 行）和 cursor（~629 行）加 `htk=True`，`melspectrogram_db` 的 `mel_frequencies` 同样加 `htk=True`（或者反过来把 shader 改成 Slaney 分段式）。
+> mel 口径已统一为 Slaney（见 2.4），原先的 TODO 7 已完成；今后改 mel 刻度只改 `src/spectra/backend/scales.py` + shader 的 `hz_to_mel`/`mel_to_hz`，两处常量由 `tests/test_scales.py` 钉住。
 
 ---
 
-> 最后更新: 2026-10-17 (CLAUDE.md 事实校正：模块表补 `loudness.py`、外部导入前缀改 `spectra.backend.core`、STFT 缓存写成 `_MAX_STFT_CACHE=8` 手动 LRU、§5 依赖图按新布局重写（补 lang/anim/icons/progress_bar/loudness）、§6 入口与 datas、§7 延迟加载对齐（quality 不再出现 librosa/pyloudnorm）、mel 口径 Slaney/HTK 不统一已量化并列入 TODO 7)
+> 最后更新: 2026-10-17 (mel 口径统一为 Slaney：新增 `src/spectra/backend/scales.py` 作 CPU 侧唯一实现，刻线/cursor 不再走 librosa，shader mel 分支改成分段镜像，`tests/test_scales.py` 钉常量)
+> 上一更新: 2026-10-17 (CLAUDE.md 事实校正：模块表补 `loudness.py`、外部导入前缀改 `spectra.backend.core`、STFT 缓存写成 `_MAX_STFT_CACHE=8` 手动 LRU、§5 依赖图按新布局重写（补 lang/anim/icons/progress_bar/loudness）、§6 入口与 datas、§7 延迟加载对齐（quality 不再出现 librosa/pyloudnorm）、mel 口径 Slaney/HTK 不统一已量化并列入 TODO 7)
 > 上一更新: 2026-10-17 (目录重构：`src/spectra/{backend(原 analyzer), frontend(原 ui), lang.py, __main__.py, assets/}` + import 前缀 `spectra.` + PyInstaller datas / CI PYTHONPATH / pyproject packages 跟着改；根目录清理：run_check.py 删、乱命名 PNG 残留删、`_remote_ref/` 忽略、`!spectra.spec` 反忽略、`assets/*.png` 不再被 `*.png` 误排（之前干净 clone 没有品牌 logo）)
 > 上一更新: 2026-10-17 (代码审查修正落地：R128 原生采样率 loudness.py、TT DR 与 LRA 分开、位深感知削波 2LSB、真 dBFS 基准、Auger-Flandrin 重分配、multi 统一行网格、流式 carry 取组内 max、缓存键统一 `cached_result`、UI P0 崩溃路径 + 信号遮蔽 + 测试挂死（模态对话框）)
 > 上一更新: 2026-10-07 (视觉升级 Round 5：画布/平底纯黑 #000000（BG_CANVAS + spectra LUT 首点同步）、主按钮金色渐变 hover/pressed(PRIMARY_HOVER_A/B)、图标 HiDPI dpr 渲染(render_icon + _icon_dpr)、窗口控制按钮描边式 SVG、品牌 logo 改用 assets/logo_mark.png(S-mark, DPR-aware)、toolbar 按钮 BG_BASE 填充 BTN_H=32)

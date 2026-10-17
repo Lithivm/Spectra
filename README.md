@@ -19,7 +19,7 @@
 | **Wheel Zoom** — scroll to zoom time axis, Shift+scroll for frequency axis, double-click reset | **滚轮缩放** — 滚轮缩放时间轴，Shift+滚轮缩放频率轴，双击重置 |
 | **Quality Analysis** — per-channel clipping (bit-depth-aware), upsampling check (Welch PSD + slope + Gibbs), DR, LUFS, true peak, LRA | **质量分析** — 多声道削波（位深感知）、升频检测（Welch PSD + 斜率 + Gibbs）、动态范围、响度、真峰值 |
 | **Multi-resolution STFT** — standard, multi-band, and phase-reassigned (iZotope RX style) | **多分辨率 STFT** — 标准、多频段、相位重分配三种模式 |
-| **Flexible Y-axis** — linear, logarithmic, mel, and bark frequency scales | **灵活 Y 轴** — 线性、对数、mel、bark 四种频率刻度 |
+| **Flexible Y-axis** — linear, logarithmic, mel (Slaney piecewise), and bark frequency scales | **灵活 Y 轴** — 线性、对数、mel（Slaney 分段拟合）、bark 四种频率刻度 |
 | **Waveform Preview** — down-sampled envelope aligned with spectrogram | **波形预览** — 降采样包络，与频谱上下对齐 |
 | **Drag & Drop** — WAV, FLAC, MP3, M4A, OGG, AAC, OPUS, APE, AIFF, WMA, TTA | **拖放加载** — 支持 11 种常见音频格式 |
 | **Bilingual UI** — Chinese / English one-click toggle | **双语界面** — 工具栏一键切换中文 / 英文 |
@@ -126,6 +126,7 @@ Spectra/
 │   │   ├── spectrum.py          # _SpectrumMixin — STFT, reassigned, mel
 │   │   ├── quality.py           # _QualityMixin — clipping, LUFS, DR
 │   │   ├── loudness.py          # R128 K-weighting 原生采样率 + 真峰值（polyphase FIR）
+│   │   ├── scales.py            # Slaney mel 刻度（CPU 侧唯一实现，shader mel 分支是它的镜像）
 │   │   ├── load.py              # PyAV multi-format decoder
 │   │   ├── metadata.py          # Tag extraction via mutagen
 │   │   ├── palette.py           # Colormap registry + curve presets (zero-dependency)
