@@ -16,7 +16,9 @@ env/
 
 # PyInstaller
 *.manifest
+# spec 是构建配置（hiddenimports / datas / upx_exclude），不是产物 —— 要跟踪
 *.spec
+!spectra.spec
 
 # IDE
 .idea/
@@ -35,14 +37,18 @@ Thumbs.db
 # Cached FFTW wisdom
 *.pkl
 
-# Demo assets
-*.png
-*.jpg
-*.jpeg
-*.gif
+# Demo assets（只忽略根目录散图；assets/ 里是运行时要读的资源）
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+!assets/*.png
 
 # Temporary files
 *.tmp
 *.log
 /release-check/
 .claude/worktrees/
+
+# 参考材料堆（非代码，不进仓库）
+/_remote_ref/
