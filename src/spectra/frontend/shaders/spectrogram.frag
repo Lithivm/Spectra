@@ -24,6 +24,18 @@ uniform float u_curve_lo;    // lower clamp bound after pow (spectra: 0.15)
 uniform float u_curve_span;  // clamp span after pow (spectra: 0.70)
 uniform vec3 u_floor;        // canvas background (== LUT flat floor, from styles.BG_CANVAS)
 
+// Mel scale (Slaney): linear below 1 kHz, logarithmic above.
+// Mirrors spectra/backend/scales.py — keep these constants in sync (pinned by tests).
+float hz_to_mel(float f) {
+    if (f < 1000.0) return f / (200.0 / 3.0);
+    return 15.0 + log(f / 1000.0) / (log(6.4) / 27.0);
+}
+
+float mel_to_hz(float m) {
+    if (m < 15.0) return m * (200.0 / 3.0);
+    return 1000.0 * exp((m - 15.0) * (log(6.4) / 27.0));
+}
+
 void main() {
     // Map UV through view window
     float u = u_t_start + uv.x * (u_t_end - u_t_start);
@@ -47,11 +59,11 @@ void main() {
         float f_norm = (exp(f_val_log) - u_f_min) / (u_f_max - u_f_min);
         y = clamp(f_norm, 0.0, 1.0);
     } else if (u_scale_mode == 2) {
-        // Mel scale: v is linear in mel space → convert to Hz → normalise
-        float mel_min = 2595.0 * log(1.0 + u_f_min / 700.0) / log(10.0);
-        float mel_max = 2595.0 * log(1.0 + u_f_max / 700.0) / log(10.0);
+        // Mel scale (Slaney): v is linear in mel space → convert to Hz → normalise
+        float mel_min = hz_to_mel(max(u_f_min, 0.0));
+        float mel_max = hz_to_mel(max(u_f_max, 0.0));
         float mel = mel_min + v * (mel_max - mel_min);
-        float hz = 700.0 * (pow(10.0, mel / 2595.0) - 1.0);
+        float hz = mel_to_hz(mel);
         y = clamp((hz - u_f_min) / (u_f_max - u_f_min), 0.0, 1.0);
     } else if (u_scale_mode == 3) {
         // Bark scale: v is linear in bark space → convert to Hz → normalise

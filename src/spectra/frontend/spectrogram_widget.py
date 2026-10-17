@@ -24,6 +24,7 @@ from spectra.frontend.styles import (
     OVERLAY_BG, TEXT_SEC, CORNER_MD,
 )
 from spectra.backend.palette import build_lut_np, is_spectra, get_curve_params
+from spectra.backend import scales
 from spectra.frontend.anim import FloatAnim
 
 
@@ -121,11 +122,8 @@ class _YAxisWidget(QWidget):
                     (np.log10(f_max) - np.log10(f_min))
                 )
             elif self._yscale_mode == "mel":
-                import librosa
-                m_tick = librosa.hz_to_mel(max(tick, 1.0))
-                m_min = librosa.hz_to_mel(f_min)
-                m_max = librosa.hz_to_mel(f_max)
-                frac = 0.0 if tick == 0 else (m_tick - m_min) / (m_max - m_min)
+                # Slaney（与 shader 的 u_scale_mode == 2 同一口径，见 backend.scales）
+                frac = 0.0 if tick == 0 else scales.mel_frac(max(tick, 1.0), f_min, f_max)
             else:
                 frac = (tick - f_min) / (f_max - f_min) if f_max > f_min else 0.5
 
@@ -625,11 +623,7 @@ class SpectrogramGLWidget(QOpenGLWidget):
             frac = (np.log10(max(cutoff, 1.0)) - np.log10(f_min_safe)) / (
                 np.log10(f_max) - np.log10(f_min_safe))
         elif self._yscale_mode == "mel":
-            import librosa
-            m_cut = librosa.hz_to_mel(max(cutoff, 1.0))
-            m_min = librosa.hz_to_mel(f_min)
-            m_max = librosa.hz_to_mel(f_max)
-            frac = (m_cut - m_min) / (m_max - m_min) if m_max > m_min else 0.5
+            frac = scales.mel_frac(max(cutoff, 1.0), f_min, f_max)
         else:
             frac = (cutoff - f_min) / (f_max - f_min) if f_max > f_min else 0.5
 
@@ -815,11 +809,11 @@ class SpectrogramGLWidget(QOpenGLWidget):
                 f_min = 1.0
             return f_min * (f_max / f_min) ** y_ratio
         elif mode == "mel":
-            from math import log10, pow as mpow
-            mel_min = 2595.0 * log10(1.0 + f_min / 700.0)
-            mel_max = 2595.0 * log10(1.0 + f_max / 700.0)
-            mel = mel_min + y_ratio * (mel_max - mel_min)
-            return 700.0 * (mpow(10.0, mel / 2595.0) - 1.0)
+            m_min = scales.hz_to_mel(f_min)
+            m_max = scales.hz_to_mel(f_max)
+            if m_max <= m_min:
+                return f_min + y_ratio * (f_max - f_min)
+            return scales.mel_to_hz(m_min + y_ratio * (m_max - m_min))
         elif mode == "bark":
             from math import atan
             bark_min = 13.0 * atan(0.00076 * f_min) + 3.5 * atan((f_min / 7500.0) ** 2)
