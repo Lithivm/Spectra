@@ -18,8 +18,8 @@ from PyQt6.QtGui import (
     QKeySequence, QShortcut, QGuiApplication,
 )
 
-from ui.anim import FloatAnim
-from ui.icons import render_icon
+from spectra.frontend.anim import FloatAnim
+from spectra.frontend.icons import render_icon
 from PyQt6.QtWidgets import (
     QFileDialog, QHBoxLayout, QVBoxLayout,
     QLabel, QMainWindow, QMessageBox, QStatusBar, QWidget,
@@ -28,15 +28,15 @@ from PyQt6.QtWidgets import (
 )
 
 
-from ui.playback_engine import PlaybackEngine
-from analyzer.palette import PALETTE
-from analyzer import is_audio_file, SUPPORTED_EXTENSIONS
+from spectra.frontend.playback_engine import PlaybackEngine
+from spectra.backend.palette import PALETTE
+from spectra.backend import is_audio_file, SUPPORTED_EXTENSIONS
 
 logger = logging.getLogger(__name__)
-from ui.metadata_panel import MetadataPanel
-from ui.spectrogram_widget import SpectrogramGLWidget, _YAxisWidget, _XAxisWidget, _ColorBarWidget
-from ui.waveform_widget import WaveformWidget
-from ui.styles import (
+from spectra.frontend.metadata_panel import MetadataPanel
+from spectra.frontend.spectrogram_widget import SpectrogramGLWidget, _YAxisWidget, _XAxisWidget, _ColorBarWidget
+from spectra.frontend.waveform_widget import WaveformWidget
+from spectra.frontend.styles import (
     BG_BASE, BG_SURFACE, BG_RAISED, BG_CANVAS,
     BORDER_SUB, BORDER_MID,
     ACCENT, ACCENT_ALT, ACCENT_RED,
@@ -56,10 +56,10 @@ def _icon_dpr() -> float:
     """
     screen = QGuiApplication.primaryScreen()
     return screen.devicePixelRatio() if screen else 1.0
-from lang import t, toggle_lang, on_lang_change
+from spectra.lang import t, toggle_lang, on_lang_change
 
 if TYPE_CHECKING:
-    from analyzer.core import AudioAnalyzer
+    from spectra.backend.core import AudioAnalyzer
 
 APP_STYLESHEET = f"""
 * {{
@@ -481,7 +481,7 @@ class _LoadWorker(QThread):
 
     def run(self) -> None:
         try:
-            from analyzer.core import AudioAnalyzer
+            from spectra.backend.core import AudioAnalyzer
             self.analyzer = AudioAnalyzer(self._path)
             self.loaded.emit()
         except Exception as e:
@@ -495,7 +495,7 @@ class _PreloadWorker(QThread):
 
     def run(self) -> None:
         try:
-            from analyzer.core import _ensure_librosa
+            from spectra.backend.core import _ensure_librosa
             _ensure_librosa()
             # Also warm up scipy (used by quality analysis)
             import scipy.signal  # noqa: F401
@@ -536,9 +536,9 @@ class _BatchWorker(QThread):
         self._files = files
 
     def run(self) -> None:
-        from analyzer.core import AudioAnalyzer as AA
-        from analyzer.metadata import get_metadata
-        from analyzer.batch import flatten_analysis
+        from spectra.backend.core import AudioAnalyzer as AA
+        from spectra.backend.metadata import get_metadata
+        from spectra.backend.batch import flatten_analysis
 
         results = []
         for i, fp in enumerate(self._files):
@@ -664,7 +664,7 @@ class MainWindow(QMainWindow):
         _grid.setRowMinimumHeight(3, SIDE)
         _grid.setRowStretch(3, 0)
 
-        # NOTE: SIDE is imported from ui.styles — single source of truth
+        # NOTE: SIDE is imported from spectra.frontend.styles — single source of truth
         self._filename_widget = QLabel()
         self._filename_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._filename_widget.setStyleSheet(
@@ -1371,8 +1371,8 @@ class MainWindow(QMainWindow):
             self._status_label.setText(f"{t('已保存', 'Saved')}  {path_str}")
 
     def _start_batch_analysis(self, files: list[Path]) -> None:
-        from ui.batch_dialog import BatchProgressDialog
-        from analyzer.batch import export_batch_csv
+        from spectra.frontend.batch_dialog import BatchProgressDialog
+        from spectra.backend.batch import export_batch_csv
 
         dialog = BatchProgressDialog(len(files), self)
         dialog.show()
@@ -1434,7 +1434,7 @@ class MainWindow(QMainWindow):
     @safe_slot
     def _on_toggle_lang(self) -> None:
         toggle_lang()
-        from lang import LANG
+        from spectra.lang import LANG
         self._lang_btn.setText("EN" if LANG == "zh" else "中")
 
     def _retranslate(self, _lang: str | None = None) -> None:

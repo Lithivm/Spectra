@@ -1,7 +1,7 @@
 """Language switcher for the Spectrum UI.
 
 Usage:
-    from lang import t, LANG, toggle_lang, on_lang_change
+    from spectra.lang import t, LANG, toggle_lang, on_lang_change
 
     label = t("中文", "English")
     unsub = on_lang_change(lambda lang: some_widget.setText(t("中文", "English")))

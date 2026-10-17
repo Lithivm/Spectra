@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from lang import t
+from spectra.lang import t
 
 from .load import load_audio
 from .metadata import get_metadata

@@ -17,14 +17,14 @@ from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QImage
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
-from lang import t
-from ui.styles import (
+from spectra.lang import t
+from spectra.frontend.styles import (
     FONT_FAMILY, FS_XS, FS_SM, FS_LG, SIDE,
     AXIS_TICK, AXIS_TEXT, COLORBAR_BORDER, CUTOFF_LINE, CURSOR_LINE,
     OVERLAY_BG, TEXT_SEC, CORNER_MD,
 )
-from analyzer.palette import build_lut_np, is_spectra, get_curve_params
-from ui.anim import FloatAnim
+from spectra.backend.palette import build_lut_np, is_spectra, get_curve_params
+from spectra.frontend.anim import FloatAnim
 
 
 def _load_shader(name: str) -> str:
@@ -34,7 +34,7 @@ def _load_shader(name: str) -> str:
     path = os.path.join(base, "shaders", name)
     if not os.path.exists(path):
         # PyInstaller --onefile: look under sys._MEIPASS
-        base2 = os.path.join(sys._MEIPASS, "ui", "shaders")
+        base2 = os.path.join(sys._MEIPASS, "spectra", "frontend", "shaders")
         path = os.path.join(base2, name)
     with open(path, "r", encoding="utf-8") as f:
         return f.read()

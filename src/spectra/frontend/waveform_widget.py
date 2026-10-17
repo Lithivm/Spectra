@@ -4,8 +4,8 @@ import numpy as np
 
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPainter, QColor, QBrush, QPolygonF, QFont
-from lang import t, on_lang_change
-from ui.styles import (
+from spectra.lang import t, on_lang_change
+from spectra.frontend.styles import (
     BORDER_MID, WAVEFORM_LINE, FONT_FAMILY, FS_LG,
 )
 from PyQt6.QtCore import Qt, QRectF, QPointF

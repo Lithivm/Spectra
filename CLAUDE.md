@@ -6,6 +6,15 @@
 
 ## 1. 整体架构概览
 
+### 1.1 包布局（2026-10-17 起）
+
+```
+src/spectra/{__main__.py, lang.py, backend/, frontend/, assets/}
+```
+
+- `backend/` = 原 `analyzer/`（解码 + 分析），`frontend/` = 原 `ui/`（Qt + OpenGL），import 前缀统一 `spectra.`
+- 测试靠 `pyproject.toml` 的 `[tool.pytest.ini_options] pythonpath = ["src"]`；根 `main.py` 是入口薄壳（未 pip install 时把 `src` 挂上 sys.path），`pip install .` 后走 `spectra` 命令（`spectra.__main__:main`）
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    main_window.py (entry)                       │
@@ -38,25 +47,25 @@
 
 ### 2.1 模块拆分
 
-`analyzer/core.py` 已拆分为四个模块：
+`src/spectra/backend/core.py` 已拆分为四个模块：
 
 | 模块                     | 职责                                                                                |
 | ---------------------- | --------------------------------------------------------------------------------- |
-| `analyzer/_state.py`   | FFTW wisdom 管理、STFT 缓存 (LRU maxsize=8, key 含 hop_length)、`_max_reduce_with_carry` |
-| `analyzer/spectrum.py` | `_SpectrumMixin` — STFT、多分辨率、相位重分配、mel、MFCC、流式渲染                                  |
-| `analyzer/quality.py`  | `_QualityMixin` — 削波、过采样检测、DR、LUFS、true peak                                      |
-| `analyzer/core.py`     | `AudioAnalyzer` 门面类，继承两个 mixin，保留 load/waveform/info                              |
+| `src/spectra/backend/_state.py`   | FFTW wisdom 管理、STFT 缓存 (LRU maxsize=8, key 含 hop_length)、`_max_reduce_with_carry` |
+| `src/spectra/backend/spectrum.py` | `_SpectrumMixin` — STFT、多分辨率、相位重分配、mel、MFCC、流式渲染                                  |
+| `src/spectra/backend/quality.py`  | `_QualityMixin` — 削波、过采样检测、DR、LUFS、true peak                                      |
+| `src/spectra/backend/core.py`     | `AudioAnalyzer` 门面类，继承两个 mixin，保留 load/waveform/info                              |
 
 所有外部导入 `from analyzer.core import AudioAnalyzer` 无需改动。
 
-### 2.2 音频加载 — `analyzer/load.py`
+### 2.2 音频加载 — `src/spectra/backend/load.py`
 
 - 主解码器：**PyAV** (libav) — 支持 FLAC, OPUS, WAV, MP3, M4A, AAC, WMA, APE, OGG, TTA, AIFF
 - PyAV 解码失败时有 ffmpeg 子进程回退（容错兜底，不保证所有格式）
 - 所有格式统一输出 `(numpy.ndarray, sample_rate, source_format)` 形式，shape 为 `(channels, samples)`
 - `source_format` 记录 PyAV 首帧的 format name（如 `"s16p"`、`"fltp"`），用于位深感知的削波分类；ffmpeg 回退路径返回 `None`
 
-### 2.3 元数据解析 — `analyzer/metadata.py`
+### 2.3 元数据解析 — `src/spectra/backend/metadata.py`
 
 基于 **mutagen** 的多格式元数据提取，内部统一 `str → Any` 字典返回。
 
@@ -77,21 +86,23 @@ class AudioAnalyzer(_SpectrumMixin, _QualityMixin):
 
 #### 关键算法
 
-- **多分辨率 STFT** — 三频段重叠拼接：低频 0–320Hz (n_fft=8192)、中频 280–3200Hz (n_fft=2048)、高频 2800Hz–Nyquist (n_fft=512)，固定 hop=512
-- **相位重分配频谱图** — iZotope RX 风格（Auger-Flandrin, IEEE TASSP 1995）。三路 STFT：原始 `S`、时间导数 `S_t`、频率导数 `S_f`，通过 `ω_corr` 和 `τ_corr` 计算瞬时频率和群延迟修正量
-- **削波检测** — 多声道独立 flat-top 检测（阈值 0.999），双桶统计（单样本 / 多样本），硬/软分类用 `np.ptp` 平坦度 + 位深感知阈值（`source_format` → 量化步长），返回 `channels_affected` 和 `single_sample_count`
+- **多分辨率 STFT** — 三频段重叠拼接：低频 0–320Hz (n_fft=8192)、中频 280–3200Hz (n_fft=2048)、高频 2800Hz–Nyquist (n_fft=512)，固定 hop=512；三频段**统一到最细的公共行网格**（4097 行，间距 sr/8192），各频段按最近 bin 映射、重叠区取逐行 max → `freqs` 严格单调、无映射空洞；各频段先算幅度、最后统一转 dB（`ref="peak"` 不再逐段各自归一）
+- **相位重分配频谱图** — iZotope RX 风格（Auger-Flandrin, IEEE TASSP 1995）。三路 STFT：原始 `S`、窗导数 `D`（→ 频率修正 `f̂ = f_k − Im(D·conj(X))/|X|² × sr/2π`）、窗×局部时间斜坡 `C`（→ 群延迟 `t̂ = j·hop/sr + Re(C·conj(X))/|X|² / sr`）；符号和缩放已用啁啓真值校过（`Re` 是群延迟，不是 `Im`）
+- **削波检测** — 多声道独立 flat-top 检测，**位深感知门限**：整数量化格式用 `1.0 − 2·LSB`（s16 → 0.99994），float/未知格式用 0.9999（旧写死的 0.999 在 16 bit 下距顶不到 2 LSB，实测会误报 160 次）；硬/软分类用 `np.ptp` 平坦度 + `2·LSB` 平坦门限，双桶统计（单样本 / 多样本），返回 `channels_affected` 和 `single_sample_count`
 - **高频截止检测** — `scipy.signal.welch` PSD（nperseg=8192, noverlap=4096），噪底 P5 + 信号参考 P90（2–12kHz），三因子置信度：对比度 0.4 + 频谱斜率 0.35（dB/oct，上 1/3 频段线性回归）+ Gibbs ringing 0.25（截止点 ±10% 趋势线偏差 >3dB）
-- **动态范围** — P95-P10 帧 RMS 差值（TT DR Meter 标准）
-- **LUFS (EBU R128)** — `pyloudnorm`，降采样保护，LRA 精确插值
+- **动态范围（TT DR）** — K 加权 300 ms 窗（无重叠）逐块响度的 P95 − P10，**未门控**，`dr_basis = "TT_DR_300ms_ungated"`；LRA 是另一个读数（3 s 块 + 门控），两者不再混为一谈
+- **LUFS (EBU R128)** — `src/spectra/backend/loudness.py`：K 权重在**原生采样率**上设计（不再降到 12 kHz —— 12 kHz 的 Nyquist 只有 6 kHz，高架中心 16.8 kHz 整段被削）；分块 + cumsum，滤波器状态跳块连续、块网格按 hop 对齐，与整段直算一致（maxdiff 1e-13）；门控用绝对 −70 / 相对 −10 LU，channel gain 按 `(channels, samples)` 广播
+- **True Peak** — polyphase FIR（4× 过采样）全频带，分块与整段同 taps 结果完全一致；sr < 16 kHz 返回 None
 
 #### 性能优化策略
 
 - **相位重分配**：`S_sq` 和 `mag` 从 `S` 的实部/虚部一次性推导，省去重复的 `np.abs` 调用
-- **多分辨率 STFT 频率去重**：用 `np.diff` + boolean mask 向量化替代 Python 逐元素循环
+- **多分辨率 STFT**：逐行幅度累加、最后统一转 dB；不再逐频段各自归一化
 - **高频截止检测**：`scipy.signal.welch` 一次调用覆盖全文件，确定性结果（无随机片段）
 - **True Peak 去重**：`analyze_quality()` 计算一次 true peak 后传入 `_measure_loudness()` 复用
+- **STFT 缓存键**：`(filepath, fingerprint, mode, n_fft, hop, window, ref)` 由 `_cache_key()` 单点生成，UI 快路径用 `cached_result()` —— 调用方自己拼键跟不上（hop 是文件长度决定的）
 
-### 2.5 配色方案 — `analyzer/palette.py`
+### 2.5 配色方案 — `src/spectra/backend/palette.py`
 
 #### 架构
 
@@ -144,14 +155,14 @@ fragColor = mix(cA, cB, u_lut_mix);   // LUT 交叉淡化
 - LUT alpha 统一为 255（shader 无 blending，alpha 通道不参与渲染，仅占位）
 - 零外部依赖，打包时无需包含 matplotlib
 
-### 2.6 渲染器 — `ui/spectrogram_widget.py`
+### 2.6 渲染器 — `src/spectra/frontend/spectrogram_widget.py`
 
 #### SpectrogramGLWidget (OpenGL)
 
 - GPU-accelerated via `QOpenGLWidget`
 - dB 矩阵上传为 `GL_R32F` 2D 纹理
 - GLSL fragment shader 做 y 轴映射 + colormap LUT 查询
-- Shader 文件外置：`ui/shaders/spectrogram.vert` / `spectrogram.frag`
+- Shader 文件外置：`src/spectra/frontend/shaders/spectrogram.vert` / `spectrogram.frag`
 - 流式加载：texture 初始化为 `-120.0` dB（噪声底），`GL_NEAREST` 过滤，软边界过渡
 - **视图状态**：`_view_t0/_view_t1`（时间窗口）、`_view_f0/_view_f1`（频率窗口），通过 shader uniform 实现 GPU 端缩放
 - **光标信息**：`setMouseTracking(True)`，`mouseMoveEvent` 发射 `cursor_info(time, freq, dB, px)` 信号
@@ -176,14 +187,14 @@ fragColor = mix(cA, cB, u_lut_mix);   // LUT 交叉淡化
 - `_ColorBarWidget` — dB 色条（右），渐变条宽度 7px
 - 三个组件 `pad_top=0, pad_bot=0`，与声谱图完全对齐
 
-### 2.7 音频播放 — `ui/playback_engine.py`
+### 2.7 音频播放 — `src/spectra/frontend/playback_engine.py`
 
 - 基于 `sounddevice.OutputStream`，WASAPI 共享模式（低延迟 ~10ms）
 - 回调帧计数器追踪位置（无 DAC time 抖动）
 - 播放/暂停/停止/Seek + 拖拽跟踪 (`track_position`)
 - 启动时探测 WASAPI 设备默认采样率，`load()` 时自动重采样（soxr 优先，scipy 回退）
 
-### 2.8 播放进度条 — `_PlaybackSlider`（`ui/main_window.py`）
+### 2.8 播放进度条 — `_PlaybackSlider`（`src/spectra/frontend/main_window.py`）
 
 - 自定义 QWidget，位于声谱图与 X 轴之间（grid row 2, col 0–2 跨三列）
 - 轨道 + 进度填充 + 可拖拽圆形滑块；绘制/鼠标均用 `pad = SIDE` 与声谱图精确对齐
@@ -191,19 +202,19 @@ fragColor = mix(cA, cB, u_lut_mix);   // LUT 交叉淡化
 - 拖拽时实时跳转播放位置
 - 播放时滑块自动跟随，停止时归零
 
-### 2.9 动画系统 — `ui/anim.py`
+### 2.9 动画系统 — `src/spectra/frontend/anim.py`
 
 - `FloatAnim(QVariantAnimation)`：浮点缓动助手（默认 OutCubic），`start_from(v0, v1)` 重启、`updateCurrentValue(value)` → `on_tick`、`finished` → 末帧精确落地后 `on_finish`
 - **复用同一动画对象时必须 `rebind(on_tick=..., on_finish=...)`**：闭包若捕获了局部变量（如新 effect、新的 start 元组），不重绑就会用旧闭包跑
 - `updateCurrentValue` 内 try/except RuntimeError → `stop()`：widget 在动画中途被销毁时安全停表（PyQt6 对已删 C++ 对象的方法调用抛 RuntimeError）
 - 动画对象必须挂在 widget 属性上（GC 安全），时长：缩放 120ms / LUT 淡化 200ms / 浮层 150ms / 滑块 120ms
 
-### 2.10 无边框窗口与图标 — `ui/main_window.py` / `ui/icons.py`
+### 2.10 无边框窗口与图标 — `src/spectra/frontend/main_window.py` / `src/spectra/frontend/icons.py`
 
 - `FramelessWindowHint` + `_RootWidget`（8px 边缘热区 → `windowHandle().startSystemResize(edges)`）+ `_TitleBarCard`（空白处拖拽移动、双击最大化/还原）
 - 窗口控制按钮（—/□/×）在 toolbar 尾部；Win11 圆角经 ctypes `DwmSetWindowAttribute`（showEvent，失败静默回退）
 - 快捷键：Ctrl+O 打开、Space 播放/暂停（焦点在按钮/下拉框时跳过）、Ctrl+S 保存 PNG；tooltip 带快捷键提示
-- `ui/icons.py`：内联 SVG 模板 + `render_icon(name, size, color, dpr=1.0)`（QSvgRenderer→QImage 物理像素栅格化→QPixmap 盖 dpr 戳→QIcon），HiDPI/缩放屏下图标不糊；dpr 取 `_icon_dpr()`（屏幕级，widget 未 show 前自身 dpr 不可靠）
+- `src/spectra/frontend/icons.py`：内联 SVG 模板 + `render_icon(name, size, color, dpr=1.0)`（QSvgRenderer→QImage 物理像素栅格化→QPixmap 盖 dpr 戳→QIcon），HiDPI/缩放屏下图标不糊；dpr 取 `_icon_dpr()`（屏幕级，widget 未 show 前自身 dpr 不可靠）
 - **Logo**：`_load_brand_logo()` 用 `assets/logo_mark.png`（透明 S-mark，44px×dpr），缺失时回退 `assets/logo.png` → 纯文本 "Spectra"；frozen/开发双路径查找
 - **cursor label**：透明底（`background: transparent`）+ 保留边框，浮在声谱图上方不遮挡画布
 
@@ -268,7 +279,7 @@ MainWindow (QMainWindow)
 
 ## 4. 批量分析
 
-### CSV 导出 (`analyzer/batch.py`)
+### CSV 导出 (`src/spectra/backend/batch.py`)
 
 `flatten_analysis()` 合并 metadata + quality analysis 为单行。所有 `BATCH_COLUMNS` 始终填充（含默认值），避免导出时 KeyError。
 
@@ -289,10 +300,10 @@ main_window.py
   ├── ui/anim.py (FloatAnim — 动画助手)
   └── ui/icons.py (render_icon — SVG 图标)
   ├── analyzer/palette.py (PALETTE, build_lut_np, is_spectra, get_curve_params)
-  ├── lang.py (t, toggle_lang, on_lang_change)
+  ├── src/spectra/lang.py (t, toggle_lang, on_lang_change)
   └── ui/styles.py (color tokens)
 
-analyzer/core.py
+``src/spectra/backend/core.py
   ├── analyzer/_state.py
   ├── analyzer/spectrum.py (_SpectrumMixin)
   ├── analyzer/quality.py (_QualityMixin)
@@ -308,8 +319,8 @@ analyzer/core.py
 - **`hiddenimports`**：pyloudnorm、pyfftw.interfaces、scipy.signal、sklearn.utils._cython_blas、soxr
 - **`console=False`**（生产）+ 文件日志兜底
 - **`upx_exclude`**：`.pyd` 和 numpy/scipy DLL 不压缩
-- Shader 文件需打入 datas：`ui/shaders/spectrogram.vert`、`spectrogram.frag`
-- `ui/icons.py` 用 `PyQt6.QtSvg`（QSvgRenderer）—— PyInstaller 自动分析该 import；图标为内联 SVG 字符串，无资源文件
+- Shader 文件需打入 datas：`src/spectra/frontend/shaders/spectrogram.vert`、`spectrogram.frag`
+- `src/spectra/frontend/icons.py` 用 `PyQt6.QtSvg`（QSvgRenderer）—— PyInstaller 自动分析该 import；图标为内联 SVG 字符串，无资源文件
 
 ---
 
@@ -317,11 +328,11 @@ analyzer/core.py
 
 重量级库（librosa、pyfftw、scipy、pyloudnorm）不在模块顶层导入，而是延迟到首次使用时加载：
 
-- `analyzer/_state.py`：`import pyfftw` 移入 `_ensure_wisdom()` / `_flush_wisdom()`
-- `analyzer/spectrum.py`：`import librosa` 移入各方法内部
-- `analyzer/quality.py`：`import librosa` 移入 `_measure_dynamic_range()`，`import pyloudnorm` 移入 `_measure_loudness()`，`import scipy.signal` 移入 `_detect_high_freq_cutoff()`
-- `analyzer/core.py`：`_ensure_librosa()` 在 `load()` 中调用，含 FutureWarning 抑制
-- `ui/main_window.py`：`AudioAnalyzer` 导入推迟到 `_LoadWorker.run()` / `_BatchWorker.run()`
+- `src/spectra/backend/_state.py`：`import pyfftw` 移入 `_ensure_wisdom()` / `_flush_wisdom()`
+- `src/spectra/backend/spectrum.py`：`import librosa` 移入各方法内部
+- `src/spectra/backend/quality.py`：`import librosa` 移入 `_measure_dynamic_range()`，`import pyloudnorm` 移入 `_measure_loudness()`，`import scipy.signal` 移入 `_detect_high_freq_cutoff()`
+- `src/spectra/backend/core.py`：`_ensure_librosa()` 在 `load()` 中调用，含 FutureWarning 抑制
+- `src/spectra/frontend/main_window.py`：`AudioAnalyzer` 导入推迟到 `_LoadWorker.run()` / `_BatchWorker.run()`
 
 ---
 
@@ -335,22 +346,24 @@ analyzer/core.py
 
 4. **多语言扩展** — `lang.t()` 或 gettext
 
-5. **TODO: metadata 中文键名改造** — `analyzer/metadata.py` 的 `_MAPS` 用中文字符串作字典键（`"标题"`、`"艺术家"` 等），`core.py` 的 `_TAG_TR` 做翻译中转。改为英文常量键名（`"title"`、`"artist"`）+ UI 层翻译，可消除 `batch.py` 中的硬编码中文键、补全 `_TAG_TR` 缺失条目（`发行商`、`调性`、`编码设备` 等）。影响范围：`metadata.py`、`core.py`、`batch.py`、`metadata_panel.py`、`test_analyzer.py`
+5. **TODO: metadata 中文键名改造** — `src/spectra/backend/metadata.py` 的 `_MAPS` 用中文字符串作字典键（`"标题"`、`"艺术家"` 等），`core.py` 的 `_TAG_TR` 做翻译中转。改为英文常量键名（`"title"`、`"artist"`）+ UI 层翻译，可消除 `batch.py` 中的硬编码中文键、补全 `_TAG_TR` 缺失条目（`发行商`、`调性`、`编码设备` 等）。影响范围：`metadata.py`、`core.py`、`batch.py`、`metadata_panel.py`、`test_analyzer.py`
 
 6. **TODO: 声谱渲染亮度与配色优化** — 当前问题：
    
    - **感知均匀配色（viridis/magma/inferno 等）整体亮度低**：这些配色有 40-60% 暗区，线性映射下大部分能量集中在 -60~-30 dB 范围会显示为暗色
    - **spectra 配色已有亮度曲线**（`SPECTRA_CURVE`），标准配色使用线性映射
    - **可能的解决方案**：收窄 dB 范围（-100 或 -90）减少暗区覆盖、研究 Spek 的具体配色实现
-   - 影响范围：`analyzer/palette.py`、`ui/spectrogram_widget.py`、`ui/shaders/spectrogram.frag`
+   - 影响范围：`src/spectra/backend/palette.py`、`src/spectra/frontend/spectrogram_widget.py`、`src/spectra/frontend/shaders/spectrogram.frag`
 
 ---
 
-> 最后更新: 2026-10-07 (视觉升级 Round 5：画布/平底纯黑 #000000（BG_CANVAS + spectra LUT 首点同步）、主按钮金色渐变 hover/pressed(PRIMARY_HOVER_A/B)、图标 HiDPI dpr 渲染(render_icon + _icon_dpr)、窗口控制按钮描边式 SVG、品牌 logo 改用 assets/logo_mark.png(S-mark, DPR-aware)、toolbar 按钮 BG_BASE 填充 BTN_H=32)
+> 最后更新: 2026-10-17 (目录重构：`src/spectra/{backend(原 analyzer), frontend(原 ui), lang.py, __main__.py, assets/}` + import 前缀 `spectra.` + PyInstaller datas / CI PYTHONPATH / pyproject packages 跟着改；根目录清理：run_check.py 删、乱命名 PNG 残留删、`_remote_ref/` 忽略、`!spectra.spec` 反忽略、`assets/*.png` 不再被 `*.png` 误排（之前干净 clone 没有品牌 logo）)
+> 上一更新: 2026-10-17 (代码审查修正落地：R128 原生采样率 loudness.py、TT DR 与 LRA 分开、位深感知削波 2LSB、真 dBFS 基准、Auger-Flandrin 重分配、multi 统一行网格、流式 carry 取组内 max、缓存键统一 `cached_result`、UI P0 崩溃路径 + 信号遮蔽 + 测试挂死（模态对话框）)
+> 上一更新: 2026-10-07 (视觉升级 Round 5：画布/平底纯黑 #000000（BG_CANVAS + spectra LUT 首点同步）、主按钮金色渐变 hover/pressed(PRIMARY_HOVER_A/B)、图标 HiDPI dpr 渲染(render_icon + _icon_dpr)、窗口控制按钮描边式 SVG、品牌 logo 改用 assets/logo_mark.png(S-mark, DPR-aware)、toolbar 按钮 BG_BASE 填充 BTN_H=32)
 > 上一更新: 2026-10-05 (视觉升级 Round 4：spectra 平底黑→BG_CANVAS(#1a1d1f) + `u_floor` uniform（硬/软门限 fade 到 floor 而非纯黑）、wave_card/spec_card 内衬 well(4px BG_CANVAS,无边框)、toolbar logo(声谱条 SVG)、cursor label 透明底、open_btn 显式样式不依赖全局)
 > 上一更新: 2026-07-14 (UI 现代化重构 Phase 0–4：design token 统一、无边框窗口+SVG图标+快捷键、动画系统 FloatAnim（缩放缓动/LUT交叉淡化/浮层淡入淡出/滑块hover/元数据错峰）)
 > 上一更新: 2026-06-16 (配色方案系统重构 + 削波/高频检测算法重写：多声道削波、位深感知、Welch PSD、多因子置信度)
-> 基于文件: main.py, ui/main_window.py, analyzer/core.py, analyzer/_state.py, analyzer/spectrum.py, analyzer/quality.py, analyzer/load.py, analyzer/metadata.py, analyzer/batch.py, analyzer/palette.py, ui/spectrogram_widget.py, ui/metadata_panel.py, ui/waveform_widget.py, ui/playback_engine.py, ui/batch_dialog.py, ui/styles.py, ui/shaders/spectrogram.vert, ui/shaders/spectrogram.frag, lang.py, spectra.spec
+> 基于文件: main.py(薄壳), src/spectra/__main__.py, src/spectra/lang.py, src/spectra/backend/{core,_state,spectrum,quality,loudness,load,metadata,palette,batch}.py, src/spectra/frontend/{main_window,spectrogram_widget,waveform_widget,metadata_panel,playback_engine,batch_dialog,progress_bar,anim,icons,styles}.py, src/spectra/frontend/shaders/spectrogram.vert, src/spectra/frontend/shaders/spectrogram.frag, spectra.spec
 
 ---
 

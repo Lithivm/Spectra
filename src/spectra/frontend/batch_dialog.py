@@ -5,8 +5,8 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QProgressBar,
     QPushButton, QHBoxLayout, QTextEdit,
 )
-from lang import t
-from ui.styles import (
+from spectra.lang import t
+from spectra.frontend.styles import (
     BG_SURFACE, BG_RAISED, BG_WELL, BORDER_SUB, BORDER_MID,
     TEXT_PRI, TEXT_SEC, ACCENT,
     PRIMARY_HOVER_A, PRIMARY_HOVER_B,

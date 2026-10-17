@@ -11,12 +11,12 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer
 
-from analyzer.core import AudioAnalyzer, _TAG_TR
-from lang import t, on_lang_change
-from ui.anim import FloatAnim
+from spectra.backend.core import AudioAnalyzer, _TAG_TR
+from spectra.lang import t, on_lang_change
+from spectra.frontend.anim import FloatAnim
 
 logger = logging.getLogger(__name__)
-from ui.styles import (
+from spectra.frontend.styles import (
     BG_SURFACE, BG_RAISED,
     BORDER_SUB, BORDER_MID,
     ACCENT, ACCENT_GRN, ACCENT_RED, ACCENT_AMB,

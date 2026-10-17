@@ -15,18 +15,18 @@ from pathlib import Path
 
 class TestIsAudioFile:
     def test_supported_extensions(self):
-        from analyzer.load import is_audio_file
+        from spectra.backend.load import is_audio_file
         for ext in [".flac", ".opus", ".wav", ".mp3", ".m4a", ".mp4",
                     ".aac", ".wma", ".ape", ".ogg", ".tta", ".aiff"]:
             assert is_audio_file(f"test{ext}") is True
 
     def test_unsupported_extensions(self):
-        from analyzer.load import is_audio_file
+        from spectra.backend.load import is_audio_file
         for name in ["readme.txt", "data.bin", "photo.jpg", "video.mkv", "doc.pdf"]:
             assert is_audio_file(name) is False
 
     def test_case_insensitive(self):
-        from analyzer.load import is_audio_file
+        from spectra.backend.load import is_audio_file
         assert is_audio_file("song.MP3") is True
         assert is_audio_file("song.WAV") is True
         assert is_audio_file("song.FlAc") is True
@@ -36,7 +36,7 @@ class TestIsAudioFile:
 
 def _make_analyzer_with_audio(audio: np.ndarray, sr: int = 48000):
     """Create an AudioAnalyzer pre-loaded with synthetic audio."""
-    from analyzer.core import AudioAnalyzer
+    from spectra.backend.core import AudioAnalyzer
     a = AudioAnalyzer()
     a.filepath = Path("/fake/test.wav")
     a.sample_rate = sr
@@ -188,7 +188,7 @@ class TestDynamicRange:
         锁住分块实现的数值正确性。
         """
         from scipy.signal import lfilter
-        from analyzer import loudness as r128
+        from spectra.backend import loudness as r128
 
         sr = 48000
         x = self._alternating_loudness().astype(np.float64)
@@ -319,7 +319,7 @@ class TestZeroCrossingRate:
 
 class TestFlattenAnalysis:
     def test_all_columns_present(self):
-        from analyzer.batch import flatten_analysis, BATCH_COLUMNS
+        from spectra.backend.batch import flatten_analysis, BATCH_COLUMNS
 
         md = {"format": "WAV", "duration": 10.0, "sample_rate": 48000,
               "channels": 2, "bitrate": 1536000,
@@ -345,7 +345,7 @@ class TestFlattenAnalysis:
         assert row["dynamic_range_db"] == 12.5
 
     def test_no_quality_results(self):
-        from analyzer.batch import flatten_analysis
+        from spectra.backend.batch import flatten_analysis
 
         md = {"format": "MP3"}
         row = flatten_analysis(md, None, Path("/fake/test.mp3"))
@@ -360,30 +360,30 @@ class TestFlattenAnalysis:
 
 class TestLang:
     def test_t_zh(self):
-        from lang import t, LANG
+        from spectra.lang import t, LANG
         LANG_old = LANG
         try:
-            import lang
+            import spectra.lang as lang
             lang.LANG = "zh"
             assert t("中文", "English") == "中文"
         finally:
             lang.LANG = LANG_old
 
     def test_t_en(self):
-        from lang import t, LANG
+        from spectra.lang import t, LANG
         LANG_old = LANG
         try:
-            import lang
+            import spectra.lang as lang
             lang.LANG = "en"
             assert t("中文", "English") == "English"
         finally:
             lang.LANG = LANG_old
 
     def test_toggle_lang(self):
-        from lang import toggle_lang, LANG
+        from spectra.lang import toggle_lang, LANG
         LANG_old = LANG
         try:
-            import lang
+            import spectra.lang as lang
             lang.LANG = "zh"
             new = toggle_lang()
             assert new == "en"
@@ -393,7 +393,7 @@ class TestLang:
             lang.LANG = LANG_old
 
     def test_on_lang_change_returns_unsubscribe(self):
-        from lang import on_lang_change
+        from spectra.lang import on_lang_change
 
         calls = []
         unsub = on_lang_change(lambda lang_code: calls.append(lang_code))
@@ -407,7 +407,7 @@ class TestLang:
 
 class TestLoadNormalization:
     def test_supported_extensions_set(self):
-        from analyzer.load import SUPPORTED_EXTENSIONS
+        from spectra.backend.load import SUPPORTED_EXTENSIONS
         assert ".wav" in SUPPORTED_EXTENSIONS
         assert ".flac" in SUPPORTED_EXTENSIONS
         assert ".mp3" in SUPPORTED_EXTENSIONS
@@ -418,7 +418,7 @@ class TestLoadNormalization:
 
 class TestAudioAnalyzerState:
     def test_default_state(self):
-        from analyzer.core import AudioAnalyzer
+        from spectra.backend.core import AudioAnalyzer
         a = AudioAnalyzer()
         assert a.filepath is None
         assert a.data is None
@@ -426,13 +426,13 @@ class TestAudioAnalyzerState:
         assert a.duration == 0.0
 
     def test_waveform_raises_without_data(self):
-        from analyzer.core import AudioAnalyzer
+        from spectra.backend.core import AudioAnalyzer
         a = AudioAnalyzer()
         with pytest.raises(RuntimeError):
             _ = a.waveform
 
     def test_analyze_quality_raises_without_data(self):
-        from analyzer.core import AudioAnalyzer
+        from spectra.backend.core import AudioAnalyzer
         a = AudioAnalyzer()
         with pytest.raises(RuntimeError):
             a.analyze_quality()
@@ -449,7 +449,7 @@ class TestAudioAnalyzerState:
 # ── F1: peak / true-peak / loudness must use ALL channels ─────────────
 
 def _make_stereo(left, right, sr=48000):
-    from analyzer.core import AudioAnalyzer
+    from spectra.backend.core import AudioAnalyzer
     a = AudioAnalyzer()
     a.filepath = Path("/fake/st.wav")
     a.sample_rate = sr
@@ -538,7 +538,7 @@ class TestR128NativeRate:
     高架中心 16.8 kHz 整段被削掉。"""
 
     def _gain(self, f, sr):
-        from analyzer import loudness as r128
+        from spectra.backend import loudness as r128
         tot = 1.0
         for b, a in r128.k_weight_coeffs(int(sr)):
             z = np.exp(2j * np.pi * f / int(sr))
@@ -546,7 +546,7 @@ class TestR128NativeRate:
         return 20 * math.log10(abs(tot))
 
     def test_k_weight_plateau_at_10khz(self):
-        from analyzer import loudness as r128
+        from spectra.backend import loudness as r128
         sr = 48000
         assert 3.5 <= self._gain(10000, sr) <= 4.5, self._gain(10000, sr)
         t = np.arange(3 * sr) / sr
@@ -558,7 +558,7 @@ class TestR128NativeRate:
 
     def test_chunked_equals_whole_file(self):
         from scipy.signal import lfilter
-        from analyzer import loudness as r128
+        from spectra.backend import loudness as r128
         sr = 44100
         rng = np.random.default_rng(5)
         x = rng.standard_normal(sr * 6) * 0.2
@@ -573,7 +573,7 @@ class TestR128NativeRate:
         assert float(np.max(np.abs(got - ref))) < 1e-6, (got[:3], ref[:3])
 
     def test_true_peak_covers_full_band(self):
-        from analyzer import loudness as r128
+        from spectra.backend import loudness as r128
         sr = 48000
         t = np.arange(sr) / sr
         x = 0.9 * np.sin(2 * np.pi * 16000 * t + 0.31)      # 采样点错过波峰
@@ -610,7 +610,7 @@ class TestClippingBitDepthThreshold:
 
 class TestMultiResolutionGrid:
     def test_freqs_monotonic_and_no_holes(self):
-        import analyzer._state as st
+        import spectra.backend._state as st
         st._stft_cache.clear()
         sr = 44100
         t = np.arange(sr) / sr
@@ -621,7 +621,7 @@ class TestMultiResolutionGrid:
         assert not np.all(db <= -120.0, axis=1).any(), "有行整行只有底噪（映射空洞）"
 
     def test_tone_lands_on_expected_grid_row(self):
-        import analyzer._state as st
+        import spectra.backend._state as st
         st._stft_cache.clear()
         sr = 44100
         t = np.arange(sr) / sr
@@ -638,7 +638,7 @@ class TestMultiResolutionGrid:
 
 class TestDbfsReference:
     def test_absolute_reference_is_true_dbfs(self):
-        import analyzer._state as st
+        import spectra.backend._state as st
         st._stft_cache.clear()
         sr = 48000
         t = np.arange(sr) / sr
@@ -652,7 +652,7 @@ class TestDbfsReference:
         assert -1.2 <= p_full <= -0.2, p_full      # 窗增益 + 半 bin 损失 ≈ −0.6 dB
 
     def test_ref_peak_is_a_display_option(self):
-        import analyzer._state as st
+        import spectra.backend._state as st
         st._stft_cache.clear()
         sr = 48000
         t = np.arange(sr) / sr
@@ -677,7 +677,7 @@ class TestCacheKey:
             assert a._cache_key(*other) != k, other
 
     def test_cached_result_and_invalidate(self):
-        import analyzer._state as st
+        import spectra.backend._state as st
         st._stft_cache.clear()
         rng = np.random.default_rng(2)
         a = _make_analyzer_with_audio((rng.standard_normal(48000) * 0.1).astype(np.float32))
@@ -695,8 +695,8 @@ class TestCacheKey:
 class TestStreamingGrouping:
     def test_partial_last_group_and_centers(self):
         from scipy.signal import get_window
-        from analyzer.spectrum import _amp_scale, _to_db
-        import analyzer._state as st
+        from spectra.backend.spectrum import _amp_scale, _to_db
+        import spectra.backend._state as st
         st._stft_cache.clear()
 
         sr = 48000

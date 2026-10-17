@@ -22,4 +22,13 @@ dependencies = [
 ]
 
 [project.gui-scripts]
-spectra = "main:main"
+spectra = "spectra.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.ruff]
+exclude = [".claude", "build", "dist"]

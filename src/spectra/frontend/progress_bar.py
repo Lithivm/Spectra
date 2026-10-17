@@ -6,7 +6,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QPaintEvent, QPainter
 from PyQt6.QtWidgets import QWidget
-from ui.styles import PROGRESS_FILL, PROGRESS_BG
+from spectra.frontend.styles import PROGRESS_FILL, PROGRESS_BG
 
 
 class ProgressBar(QWidget):

@@ -27,8 +27,8 @@ jobs:
       - name: Run algorithm tests
         env:
           QT_QPA_PLATFORM: offscreen
-          PYTHONPATH: .
-        run: python -m pytest tests/test_analyzer.py -v --tb=short
+          PYTHONPATH: src
+        run: python -m pytest tests/ -v --tb=short
 
   lint:
     runs-on: ubuntu-latest
@@ -46,4 +46,4 @@ jobs:
         run: pip install ruff
 
       - name: Lint
-        run: ruff check --select=E,F,W --ignore=E501,E402,F405,F403 --exclude=".claude,build,dist,run_check.py" .
+        run: ruff check --select=E,F,W --ignore=E501,E402,F405,F403 .

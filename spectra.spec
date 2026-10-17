@@ -4,14 +4,14 @@ from PyInstaller.utils.hooks import collect_data_files
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=['src'],
     binaries=[],
     datas=[
         *collect_data_files('mutagen'),
-        ('assets/logo.png', 'assets'),
-        ('assets/logo_mark.png', 'assets'),
-        ('ui/shaders/spectrogram.vert', 'ui/shaders'),
-        ('ui/shaders/spectrogram.frag', 'ui/shaders'),
+        ('src/spectra/assets/logo.png', 'assets'),
+        ('src/spectra/assets/logo_mark.png', 'assets'),
+        ('src/spectra/frontend/shaders/spectrogram.vert', 'spectra/frontend/shaders'),
+        ('src/spectra/frontend/shaders/spectrogram.frag', 'spectra/frontend/shaders'),
     ],
     hiddenimports=[
         'pyloudnorm',
@@ -55,7 +55,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name='Spectra',
-    icon=r'assets\logo.ico',
+    icon=r'src\spectra\assets\logo.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

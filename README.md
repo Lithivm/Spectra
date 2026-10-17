@@ -114,31 +114,37 @@ Output is in `dist/Spectra/`. See `spectra.spec` for packaging details.
 
 ```
 Spectra/
-├── main.py                     # Entry point + crash logger
-├── lang.py                      # Bilingual (zh/en) toggle
-├── analyzer/
-│   ├── core.py                  # AudioAnalyzer facade class
-│   ├── _state.py                # FFTW wisdom + STFT cache (LRU)
-│   ├── spectrum.py              # _SpectrumMixin — STFT, reassigned, mel
-│   ├── quality.py               # _QualityMixin — clipping, LUFS, DR
-│   ├── load.py                  # PyAV multi-format decoder
-│   ├── metadata.py              # Tag extraction via mutagen
-│   ├── palette.py               # Colormap registry + curve presets (zero-dependency)
-│   └── batch.py                 # CSV export for batch analysis
-├── ui/
-│   ├── main_window.py           # Main window, toolbar, playback slider, workers
-│   ├── spectrogram_widget.py    # QOpenGLWidget renderer + axis/colorbar + cursor zoom
-│   ├── waveform_widget.py       # Waveform envelope
-│   ├── metadata_panel.py        # File info + quality analysis panel
-│   ├── playback_engine.py       # Audio playback via sounddevice
-│   ├── batch_dialog.py          # Batch progress dialog
-│   ├── styles.py                # Color tokens for dark theme
-│   └── shaders/
-│       ├── spectrogram.vert     # GLSL vertex shader
-│       └── spectrogram.frag     # GLSL fragment shader (zoom + curve uniforms)
-└── assets/
-    ├── logo.png
-    └── logo.ico
+├── main.py                      # 入口薄壳（开发期直跑；装成包后走 `spectra` 命令）
+├── docs/                        # 文档：specs / agents
+├── src/spectra/
+│   ├── __main__.py              # Entry point + crash logger
+│   ├── lang.py                  # Bilingual (zh/en) toggle
+│   ├── assets/                  # logo.ico · logo.png · logo_mark.png
+│   ├── backend/                 # 后端：解码 + 分析
+│   │   ├── core.py              # AudioAnalyzer facade class
+│   │   ├── _state.py            # FFTW wisdom + STFT cache (LRU)
+│   │   ├── spectrum.py          # _SpectrumMixin — STFT, reassigned, mel
+│   │   ├── quality.py           # _QualityMixin — clipping, LUFS, DR
+│   │   ├── loudness.py          # R128 K-weighting 原生采样率 + 真峰值（polyphase FIR）
+│   │   ├── load.py              # PyAV multi-format decoder
+│   │   ├── metadata.py          # Tag extraction via mutagen
+│   │   ├── palette.py           # Colormap registry + curve presets (zero-dependency)
+│   │   └── batch.py             # CSV export for batch analysis
+│   └── frontend/                # 前端：Qt + OpenGL
+│       ├── main_window.py       # Main window, toolbar, playback slider, workers
+│       ├── spectrogram_widget.py # QOpenGLWidget renderer + axis/colorbar + cursor zoom
+│       ├── waveform_widget.py   # Waveform envelope
+│       ├── metadata_panel.py    # File info + quality analysis panel
+│       ├── playback_engine.py   # Audio playback via sounddevice
+│       ├── batch_dialog.py      # Batch progress dialog
+│       ├── progress_bar.py      # 浮在声谱图上的加载进度浮层
+│       ├── anim.py              # FloatAnim 缓动助手
+│       ├── icons.py             # 内联 SVG 图标（HiDPI）
+│       ├── styles.py            # Color tokens for dark theme
+│       └── shaders/
+│           ├── spectrogram.vert # GLSL vertex shader
+│           └── spectrogram.frag # GLSL fragment shader (zoom + curve uniforms)
+└── tests/
 ```
 
 ## Tech Stack · 技术栈

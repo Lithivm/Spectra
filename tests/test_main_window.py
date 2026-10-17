@@ -12,7 +12,7 @@ def app():
 
 
 def _build_main_window(app: QApplication):
-    from ui.main_window import MainWindow
+    from spectra.frontend.main_window import MainWindow
     mw = MainWindow()
     mw.resize(800, 600)
     mw.show()
@@ -29,31 +29,31 @@ class TestIsAudio:
     """Test the static `_is_audio` method on MainWindow."""
 
     def test_mp3(self, app):
-        from ui.main_window import MainWindow
+        from spectra.frontend.main_window import MainWindow
         assert MainWindow._is_audio("song.mp3") is True
 
     def test_wav(self, app):
-        from ui.main_window import MainWindow
+        from spectra.frontend.main_window import MainWindow
         assert MainWindow._is_audio("song.wav") is True
 
     def test_ogg(self, app):
-        from ui.main_window import MainWindow
+        from spectra.frontend.main_window import MainWindow
         assert MainWindow._is_audio("song.ogg") is True
 
     def test_flac(self, app):
-        from ui.main_window import MainWindow
+        from spectra.frontend.main_window import MainWindow
         assert MainWindow._is_audio("song.flac") is True
 
     def test_txt_rejected(self, app):
-        from ui.main_window import MainWindow
+        from spectra.frontend.main_window import MainWindow
         assert MainWindow._is_audio("readme.txt") is False
 
     def test_json_rejected(self, app):
-        from ui.main_window import MainWindow
+        from spectra.frontend.main_window import MainWindow
         assert MainWindow._is_audio("config.json") is False
 
     def test_png_rejected(self, app):
-        from ui.main_window import MainWindow
+        from spectra.frontend.main_window import MainWindow
         assert MainWindow._is_audio("photo.png") is False
 
 
@@ -62,7 +62,7 @@ class TestDragDrop:
 
     def test_open_file_accepted_audio(self, app, monkeypatch):
         """不能真的弹模态对话框（会挂住）——把 getOpenFileName 打桩成返回一个音频路径。"""
-        from ui.main_window import MainWindow
+        from spectra.frontend.main_window import MainWindow
         monkeypatch.setattr(
             QFileDialog, "getOpenFileName",
             staticmethod(lambda parent, title, directory, name_filter: ("/tmp/song.mp3", "Audio Files (*.mp3)")),
@@ -131,13 +131,13 @@ class TestDragDropRejection:
     """Test that non-audio files are rejected in drag-and-drop."""
 
     def test_is_audio_rejects_non_media(self, app):
-        from ui.main_window import MainWindow
+        from spectra.frontend.main_window import MainWindow
         assert MainWindow._is_audio("readme.txt") is False
         assert MainWindow._is_audio("data.bin") is False
         assert MainWindow._is_audio("photo.jpeg") is False
 
     def test_is_audio_accepts_audio(self, app):
-        from ui.main_window import MainWindow
+        from spectra.frontend.main_window import MainWindow
         for ext in [".wav", ".mp3", ".flac", ".ogg", ".m4a", ".opus"]:
             assert MainWindow._is_audio(f"song{ext}") is True
 
@@ -181,14 +181,14 @@ class TestVisualUpgrade:
         assert mw._open_btn.objectName() == ""
 
     def test_spec_well_inset(self, mw):
-        from ui.styles import BG_CANVAS
+        from spectra.frontend.styles import BG_CANVAS
         well = mw._spec.parentWidget()
         assert well is not None
         assert well.objectName() == "spec_well"
         assert BG_CANVAS in well.styleSheet()
 
     def test_spectra_floor_matches_canvas(self):
-        from analyzer.palette import build_lut_np
+        from spectra.backend.palette import build_lut_np
         lut = build_lut_np("spectra")
         assert tuple(lut[0][:3]) == (0, 0, 0)      # == BG_CANVAS #000000
 
