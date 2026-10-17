@@ -133,7 +133,7 @@ def _try_load_ffmpeg(filepath: Path) -> tuple[np.ndarray, int] | None:
         probe_cmd = [
             "ffprobe", "-v", "quiet",
             "-select_streams", "a:0",
-            "-show_entries", "stream=sample_rate,channels",
+            "-show_entries", "stream=sample_rate,channels,sample_fmt",
             "-of", "json",
             str(filepath),
         ]
@@ -145,8 +145,9 @@ def _try_load_ffmpeg(filepath: Path) -> tuple[np.ndarray, int] | None:
             stream = info.get("streams", [{}])[0]
             sr = int(stream.get("sample_rate", 48000))
             ch = int(stream.get("channels", 2))
+            probe_fmt = stream.get("sample_fmt") or None
         else:
-            sr, ch = 48000, 2
+            sr, ch, probe_fmt = 48000, 2, None
     except Exception:
         sr, ch = 48000, 2
 
@@ -173,8 +174,9 @@ def _try_load_ffmpeg(filepath: Path) -> tuple[np.ndarray, int] | None:
 
         samples = len(result.stdout) // (4 * ch)
         data = np.frombuffer(result.stdout, dtype=np.float32).reshape((samples, ch))
-        # 转为 (channels, samples)
-        return data.T.copy(), sr
+        # 转为 (channels, samples)。source_format 取 ffprobe 的 sample_fmt（解码后是
+        # float，但位深仍影响削波判定的量化步长）。
+        return data.T.copy(), sr, probe_fmt
 
     except Exception as e:
         logger.debug("ffmpeg backend failed for %s: %s", filepath, e)

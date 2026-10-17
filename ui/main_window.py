@@ -29,7 +29,6 @@ from PyQt6.QtWidgets import (
 
 
 from ui.playback_engine import PlaybackEngine
-from analyzer._state import _stft_cache, _stft_lock
 from analyzer.palette import PALETTE
 from analyzer import is_audio_file, SUPPORTED_EXTENSIONS
 
@@ -408,7 +407,9 @@ class _SpectrumWorker(QThread):
     stream_init  = pyqtSignal(object, int, float)         # freqs, total_cols, duration
     stream_block = pyqtSignal(int, object)                 # c0, block_db
     stream_done  = pyqtSignal(object, object, object)      # freqs, times, full_db
-    finished     = pyqtSignal(object, object, object, str) # legacy path
+    # 注意：不要叫 finished —— 会遮蔽 QThread.finished（实测导致 _hold_ref 的
+    # 回收 lambda 收错参数 → 僵尸 worker 永不释放，滞留整份解码音频）
+    result_ready = pyqtSignal(object, object, object, str)  # freqs, times, db, mode
     fading       = pyqtSignal()
 
     def __init__(self, analyzer: AudioAnalyzer, n_fft: int = 2048,
@@ -429,13 +430,10 @@ class _SpectrumWorker(QThread):
         t0 = time.perf_counter()
         if self._mode == "standard":
             # ── Cache fast-path ──
-            fp = str(self._analyzer.filepath) if self._analyzer.filepath else ""
-            cache_key = (fp, "standard", self._n_fft)
-            with _stft_lock:
-                cached = _stft_cache.get(cache_key)
+            cached = self._analyzer.cached_result("standard", self._n_fft)
             if cached is not None:
                 freqs, times, db = cached
-                self.finished.emit(freqs, times, db, "standard")
+                self.result_ready.emit(freqs, times, db, "standard")
                 self.fading.emit()
                 return
             # ── Streaming path ──
@@ -460,14 +458,14 @@ class _SpectrumWorker(QThread):
                     n_fft=self._n_fft, mode="standard")
                 logger.debug("STFT fallback (n_fft=%s, mode=%s): %.2fs",
                              self._n_fft, "standard", time.perf_counter() - t0)
-                self.finished.emit(freqs, times, db, "standard")
+                self.result_ready.emit(freqs, times, db, "standard")
             # else: cancelled — emit nothing
         else:
             freqs, times, db = self._analyzer.spectrogram_db(
                 n_fft=self._n_fft, mode=self._mode)
             logger.debug("STFT (n_fft=%s, mode=%s): %.2fs",
                          self._n_fft, self._mode, time.perf_counter() - t0)
-            self.finished.emit(freqs, times, db, self._mode)
+            self.result_ready.emit(freqs, times, db, self._mode)
         self.fading.emit()
 
 
@@ -493,7 +491,7 @@ class _LoadWorker(QThread):
 class _PreloadWorker(QThread):
     """Background thread to warm up heavy libraries (librosa, pyfftw, scipy).
     Runs once at startup so the first file-open is instant."""
-    finished = pyqtSignal()
+    ready = pyqtSignal()  # 不叫 finished：避免遮蔽 QThread.finished
 
     def run(self) -> None:
         try:
@@ -504,11 +502,11 @@ class _PreloadWorker(QThread):
             import scipy.ndimage  # noqa: F401
         except Exception:
             pass
-        self.finished.emit()
+        self.ready.emit()
 
 
 class _QualityWorker(QThread):
-    finished = pyqtSignal(object)
+    result_ready = pyqtSignal(object)  # 不叫 finished：避免遮蔽 QThread.finished
     progress = pyqtSignal(int)
 
     def __init__(self, analyzer: AudioAnalyzer) -> None:
@@ -525,12 +523,12 @@ class _QualityWorker(QThread):
             logger.exception("QualityWorker failed")
             result = None
         self.progress.emit(90)  # STFT done
-        self.finished.emit(result)
+        self.result_ready.emit(result)
         self.progress.emit(100)  # render done
 
 
 class _BatchWorker(QThread):
-    finished = pyqtSignal(object)           # list[dict] — flattened results
+    results_ready = pyqtSignal(object)       # list[dict] — flattened results
     progress = pyqtSignal(int, str, bool)    # n, filename, ok
 
     def __init__(self, files: list[Path]) -> None:
@@ -556,7 +554,7 @@ class _BatchWorker(QThread):
             except Exception as e:
                 results.append({"filename": fp.name, "filepath": str(fp), "error": str(e)})
                 self.progress.emit(i + 1, fp.name, False)
-        self.finished.emit(results)
+        self.results_ready.emit(results)
 
 
 class MainWindow(QMainWindow):
@@ -595,7 +593,7 @@ class MainWindow(QMainWindow):
 
         # Background preload: warm up heavy libraries while user sees the window
         self._preload_worker = _PreloadWorker()
-        self._preload_worker.finished.connect(
+        self._preload_worker.ready.connect(
             lambda: logger.debug("Preload complete"))
         self._preload_worker.start()
 
@@ -1013,10 +1011,13 @@ class MainWindow(QMainWindow):
                 self._colorbar.set_data(self._spec._lut_np, use_curve=_uc,
                                         curve_power=_cp, curve_lo=_cl, curve_span=_cs)
 
+    @safe_slot
     def _on_mode_changed(self, mode: str) -> None:
         self._mode = mode
         self._fft_combo.setEnabled(mode != "multi")
-        if self._current_path:
+        # 光判 _current_path 不够：加载中/加载失败时 _current_path 已设而 _analyzer
+        # 仍是 None，_reload_spectrum 读 self._analyzer.filepath 会 AttributeError
+        if self._current_path and self._analyzer is not None:
             self._reload_spectrum()
 
     def _on_yscale_changed(self, scale: str) -> None:
@@ -1026,9 +1027,10 @@ class MainWindow(QMainWindow):
                 self._y_axis.set_data(self._spec.frequencies, scale,
                                       self._spec._view_f0, self._spec._view_f1)
 
+    @safe_slot
     def _on_fft_size_changed(self, size_str: str) -> None:
         self._fft_size = int(size_str)
-        if self._current_path:
+        if self._current_path and self._analyzer is not None:
             self._reload_spectrum()
 
     def _reload_spectrum(self) -> None:
@@ -1036,20 +1038,17 @@ class MainWindow(QMainWindow):
         self._cancel_spectrum()
         if self._mode == "standard":
             # Clear cache so the scroll-fill animation always plays
-            fp = str(self._analyzer.filepath) if self._analyzer.filepath else ""
-            cache_key = (fp, "standard", self._fft_size)
-            with _stft_lock:
-                _stft_cache.pop(cache_key, None)
+            self._analyzer.invalidate_cache("standard", self._fft_size)
             self._spec.hide_progress()
             self._spectrum_worker = _SpectrumWorker(self._analyzer, self._fft_size, self._mode)
             self._spectrum_worker.stream_init.connect(self._on_stream_init)
             self._spectrum_worker.stream_block.connect(self._on_stream_block)
             self._spectrum_worker.stream_done.connect(self._on_stream_done)
-            self._spectrum_worker.finished.connect(self._on_spectrum_done)
+            self._spectrum_worker.result_ready.connect(self._on_spectrum_done)
         else:
             self._spec.show_progress()
             self._spectrum_worker = _SpectrumWorker(self._analyzer, self._fft_size, self._mode)
-            self._spectrum_worker.finished.connect(self._on_spectrum_done)
+            self._spectrum_worker.result_ready.connect(self._on_spectrum_done)
             self._spectrum_worker.fading.connect(lambda: self._spec.hide_progress())
         self._spectrum_worker.start()
 
@@ -1122,9 +1121,17 @@ class MainWindow(QMainWindow):
     @safe_slot
     def _on_load_done(self) -> None:
         """Audio loaded — wire up quality, waveform, and spectrum workers."""
-        analyzer = self._load_worker.analyzer
-        old_load = self._load_worker
-        self._load_worker = None
+        # 用 sender() 取 worker：_cancel_load 已置 None 并 disconnect，但队列里已投递的
+        # 事件仍可能送达 → 读 self._load_worker.analyzer 会 None.analyzer
+        worker = self.sender() or self._load_worker
+        if worker is None:
+            return
+        analyzer = getattr(worker, "analyzer", None)
+        if analyzer is None:
+            return
+        old_load = worker
+        if self._load_worker is worker:
+            self._load_worker = None
         self._hold_ref(old_load)
         self._analyzer = analyzer
 
@@ -1133,7 +1140,7 @@ class MainWindow(QMainWindow):
         logger.debug("元数据: %.2fs", time.perf_counter() - t0)
 
         self._quality_worker = _QualityWorker(analyzer)
-        self._quality_worker.finished.connect(self._on_quality_done)
+        self._quality_worker.result_ready.connect(self._on_quality_done)
         self._quality_worker.start()
 
         t0 = time.perf_counter()
@@ -1162,19 +1169,24 @@ class MainWindow(QMainWindow):
             self._spectrum_worker.stream_init.connect(self._on_stream_init)
             self._spectrum_worker.stream_block.connect(self._on_stream_block)
             self._spectrum_worker.stream_done.connect(self._on_stream_done)
-            self._spectrum_worker.finished.connect(self._on_spectrum_done)
+            self._spectrum_worker.result_ready.connect(self._on_spectrum_done)
         else:
-            self._spectrum_worker.finished.connect(self._on_spectrum_done)
+            self._spectrum_worker.result_ready.connect(self._on_spectrum_done)
             self._spectrum_worker.fading.connect(lambda: self._spec.hide_progress())
         self._spectrum_worker.start()
 
     @safe_slot
     def _on_load_error(self, msg: str) -> None:
-        old_load = self._load_worker
-        self._load_worker = None
-        self._hold_ref(old_load)
+        # 同 _on_load_done：只能用 sender() 取 worker（属性可能已被 _cancel_load 置 None）
+        worker = self.sender() or self._load_worker
+        if worker is not None:
+            if self._load_worker is worker:
+                self._load_worker = None
+            self._hold_ref(worker)
         self._spec.hide_progress()
         path = self._current_path
+        # 加载失败后不再保留路径，否则改 mode/FFT 会去重算一个不存在的数据集
+        self._current_path = None
         QMessageBox.critical(self, t("错误", "Error"),
                              t(f"无法加载:\n{path.name if path else msg}",
                                f"Cannot load:\n{path.name if path else msg}"))
@@ -1185,7 +1197,7 @@ class MainWindow(QMainWindow):
             self._spectrum_worker = None
             old.requestInterruption()
             for sig in (old.stream_init, old.stream_block, old.stream_done,
-                         old.finished, old.fading):
+                         old.result_ready, old.fading):
                 try:
                     sig.disconnect()
                 except TypeError:
@@ -1197,7 +1209,7 @@ class MainWindow(QMainWindow):
             old = self._quality_worker
             self._quality_worker = None
             old.requestInterruption()
-            for sig in (old.finished, old.progress):
+            for sig in (old.result_ready, old.progress):
                 try:
                     sig.disconnect()
                 except TypeError:
@@ -1221,8 +1233,12 @@ class MainWindow(QMainWindow):
         a live C++ thread. Automatically cleaned up on finished."""
         if not hasattr(self, '_zombies'):
             self._zombies: list[QThread] = []
-        if worker.isRunning():
+        if worker is None:
+            return
+        if worker.isRunning() and worker not in self._zombies:
             self._zombies.append(worker)
+            # worker.finished 现在就是 QThread 的真信号（QThread.finished 无参），
+            # 自定义结果信号已改名 result_ready/results_ready，不再遮蔽它。
             worker.finished.connect(lambda w=worker: self._remove_zombie(w))
 
     def _remove_zombie(self, worker: QThread) -> None:
@@ -1370,6 +1386,10 @@ class MainWindow(QMainWindow):
 
         def on_finished(results):
             self._batch_results = results
+            # 此时 run() 刚 emit 完，线程可能还在跑 —— 先 _hold_ref 再置 None，
+            # 否则 wrapper 被 GC → "QThread: Destroyed while thread is still running"
+            if self._batch_worker is not None:
+                self._hold_ref(self._batch_worker)
             self._batch_worker = None
             dialog.finish()
             self._status_label.setText(
@@ -1389,7 +1409,7 @@ class MainWindow(QMainWindow):
                 worker.requestInterruption()
 
         worker.progress.connect(on_progress)
-        worker.finished.connect(on_finished)
+        worker.results_ready.connect(on_finished)
         dialog.cancelled.connect(on_cancel)
         dialog._export_btn.clicked.connect(on_export)
 
@@ -1411,6 +1431,7 @@ class MainWindow(QMainWindow):
         elif len(audio_paths) > 1:
             self._start_batch_analysis(audio_paths)
 
+    @safe_slot
     def _on_toggle_lang(self) -> None:
         toggle_lang()
         from lang import LANG

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
-
 import numpy as np
 
 from ._state import (
@@ -15,10 +13,89 @@ from ._state import (
 )
 
 
+_TINY = 1e-12
+
+
+def _amp_scale(win: np.ndarray, n_fft: int, n_freqs: int) -> np.ndarray:
+    """每 bin 的单边谱幅度归一化因子（把 STFT 幅度还原成相对满量程的幅度）。
+
+    单边谱 ×2，再除以窗相干增益 mean(w)。DC 与 Nyquist bin 不加倍。
+    hann 窗 mean = 0.5 → 因子 = 4/n_fft（比旧的 mag/n_fft 高 6.02 dB）。
+    """
+    cg = float(np.mean(win)) if len(win) else 1.0
+    if cg <= 1e-12:
+        cg = 1.0
+    base = 2.0 / (n_fft * cg)
+    scale = np.full(n_freqs, base, dtype=np.float32)
+    scale[0] = base / 2.0
+    if n_freqs > 1 and n_fft % 2 == 0:
+        scale[-1] = base / 2.0
+    return scale
+
+
+def _to_db(mag: np.ndarray, scale: np.ndarray, ref: str = "dbfs") -> np.ndarray:
+    """幅度 → dB。ref='dbfs'（默认，真 dBFS）或 ref='peak'（峰值归一化显示）。"""
+    s = np.asarray(scale, dtype=np.float32)
+    if mag.ndim > 1:
+        s = s.reshape((-1,) + (1,) * (mag.ndim - 1))
+    a = mag.astype(np.float32) * s
+    if ref == "peak":
+        r = float(np.max(a)) if a.size else 0.0
+        if r <= 0.0:
+            r = 1.0
+    else:
+        r = 1.0
+    return (20.0 * np.log10(np.maximum(a / r, _TINY))).astype(np.float32)
+
+
 class _SpectrumMixin:
     """Mixed into AudioAnalyzer.  Expects self.data, self.sample_rate, etc."""
 
     TARGET_FRAMES = 16384
+
+    # ------------------------------------------------------------------
+    # Cache key / hop
+    # ------------------------------------------------------------------
+    def _resolve_hop(self, n_fft: int, hop_length: int | None) -> int:
+        if hop_length is not None:
+            return int(hop_length)
+        if self.duration > 0:
+            target_hop = int(self.duration * self.sample_rate / self.TARGET_FRAMES)
+            return max(n_fft // 8, min(n_fft, target_hop))
+        return n_fft // 4
+
+    def _cache_key(self, mode: str, n_fft: int, hop: int, window: str, ref: str):
+        """规范化缓存键 — 两条路径共用同一形状。含文件指纹，防止文件被改后读到旧结果。"""
+        if not self.filepath:
+            return None
+        try:
+            st = self.filepath.stat()
+            fingerprint = (int(st.st_size), int(st.st_mtime_ns))
+        except OSError:
+            fingerprint = (0, 0)
+        return (str(self.filepath), fingerprint, mode, int(n_fft), int(hop), window, ref)
+
+    def cached_result(self, mode: str, n_fft: int, window: str = "hann",
+                      ref: str = "dbfs", hop: int | None = None):
+        """UI 缓存快路径：用同一个规范化键查缓存。
+
+        调用方自己拼键永远跟不上（hop 是文件长度决定的），所以由这里统一算。
+        """
+        key = self._cache_key(mode, n_fft, self._resolve_hop(n_fft, hop), window, ref)
+        if key is None:
+            return None
+        with _stft_lock:
+            return _stft_cache.get(key)
+
+    def invalidate_cache(self, mode: str | None = None, n_fft: int | None = None) -> int:
+        """Drop cached STFT results matching mode/n_fft. Returns number removed."""
+        removed = 0
+        with _stft_lock:
+            for key in list(_stft_cache.keys()):
+                if (mode is None or key[2] == mode) and (n_fft is None or key[3] == int(n_fft)):
+                    _stft_cache.pop(key, None)
+                    removed += 1
+        return removed
 
     # ------------------------------------------------------------------
     # STFT
@@ -54,6 +131,7 @@ class _SpectrumMixin:
         win_length: int | None = None,
         window: str = "hann",
         mode: str = "standard",
+        ref: str = "dbfs",
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute dB spectrogram.
 
@@ -63,48 +141,51 @@ class _SpectrumMixin:
             "standard" — single fixed-size STFT (default).
             "multi"    — multi-resolution: large FFT at lows, small at highs.
             "reassign" — phase-reassigned spectrogram for sharper harmonics.
+        ref : str
+            "dbfs" (default) — absolute reference, values are true dBFS.
+            "peak" — normalise to the file's own maximum (display option).
         """
         import librosa
         _ensure_wisdom()
-        if self.filepath and self.filepath.exists():
-            cache_key = (str(self.filepath), mode, n_fft, hop_length)
+        hop = self._resolve_hop(n_fft, hop_length)
+        cache_key = self._cache_key(mode, n_fft, hop, window, ref)
+        if cache_key:
             with _stft_lock:
                 if cache_key in _stft_cache:
                     return _stft_cache[cache_key]
 
-        # ── Adaptive hop: aim for TARGET_FRAMES directly, skip downsampling ──
-        if hop_length is None:
-            if self.duration > 0:
-                target_hop = int(self.duration * self.sample_rate / self.TARGET_FRAMES)
-                hop = max(n_fft // 8, min(n_fft, target_hop))
-            else:
-                hop = n_fft // 4
-        else:
-            hop = hop_length
+        win = np.asarray(librosa.filters.get_window(window, win_length or n_fft), dtype=np.float32)
+        if len(win) < n_fft:
+            win = np.pad(win, (0, n_fft - len(win)))
+        scale = _amp_scale(win, n_fft, n_fft // 2 + 1)
 
         if mode == "multi":
-            result = self._multi_resolution_stft(window)
+            result = self._multi_resolution_stft(window, ref)
         elif mode == "reassign":
-            result = self._reassigned_spectrogram(n_fft, hop, win_length, window)
+            result = self._reassigned_spectrogram(n_fft, hop, win_length, window, ref)
         else:
             freqs, times, S = self.stft(n_fft, hop, win_length, window)
-            result = (freqs, times, librosa.amplitude_to_db(np.abs(S), ref=np.max, top_db=None))
+            result = (freqs, times, _to_db(np.abs(S), scale, ref))
 
         # ── Downsample time axis (only if adaptive hop overshot target) ──
         freqs, times, db = result
         if db.shape[1] > self.TARGET_FRAMES:
             chunk = db.shape[1] // self.TARGET_FRAMES
-            db = db[:, :chunk * self.TARGET_FRAMES].reshape(
-                db.shape[0], self.TARGET_FRAMES, chunk
+            n_full = self.TARGET_FRAMES
+            db_full = db[:, :chunk * n_full].reshape(
+                db.shape[0], n_full, chunk
             ).max(axis=2)
-            times = times[:chunk * self.TARGET_FRAMES].reshape(
-                self.TARGET_FRAMES, chunk
-            ).mean(axis=1)
-            result = (freqs, times.astype(np.float64), db)
+            t_full = times[:chunk * n_full].reshape(n_full, chunk).mean(axis=1)
+            tail = chunk * n_full
+            if tail < db.shape[1]:                       # 尾部不足一整组：不能丢
+                db_full = np.concatenate(
+                    [db_full, db[:, tail:].max(axis=1, keepdims=True)], axis=1)
+                t_full = np.concatenate([t_full, times[tail:].mean(axis=1, keepdims=True)], axis=1)
+            result = (freqs, t_full.astype(np.float64), db_full)
 
-        if self.filepath:
+        if cache_key:
             with _stft_lock:
-                _stft_cache[(str(self.filepath), mode, n_fft, hop_length)] = result
+                _stft_cache[cache_key] = result
                 while len(_stft_cache) > _MAX_STFT_CACHE:
                     _stft_cache.popitem(last=False)
 
@@ -136,7 +217,6 @@ class _SpectrumMixin:
         normalisation, because the global maximum is not known ahead of time.
         The shader's vmin/vmax range (-120..0 dB) absorbs the offset.
         """
-        import librosa
         _ensure_wisdom()
         from scipy.signal import get_window
 
@@ -148,14 +228,7 @@ class _SpectrumMixin:
         n_freqs = n_fft // 2 + 1
 
         # ── Hop calculation (same as spectrogram_db) ──
-        if hop_length is None:
-            if self.duration > 0:
-                target_hop = int(self.duration * sr / self.TARGET_FRAMES)
-                hop = max(n_fft // 8, min(n_fft, target_hop))
-            else:
-                hop = n_fft // 4
-        else:
-            hop = hop_length
+        hop = self._resolve_hop(n_fft, hop_length)
 
         pad = n_fft // 2
         audio_padded = np.pad(audio.astype(np.float32), pad, mode='reflect')
@@ -179,6 +252,7 @@ class _SpectrumMixin:
         win = get_window(window, n_fft_w).astype(np.float32)
         if n_fft_w < n_fft:
             win = np.pad(win, (0, n_fft - n_fft_w))
+        scale = _amp_scale(win, n_fft, n_freqs)
 
         on_init(freqs, total_cols, hop)
 
@@ -193,7 +267,6 @@ class _SpectrumMixin:
         acc = np.zeros((n_freqs, total_cols), dtype=np.float32)
         carry = None
         out_col = 0
-        eps = np.finfo(np.float32).eps
 
         for c0 in range(0, raw_cols, block_cols):
             if cancel_check():
@@ -215,7 +288,7 @@ class _SpectrumMixin:
             fft()
 
             mag = np.abs(buf_freq[:, :cnt])
-            block_db = (20.0 * np.log10(np.maximum(mag / n_fft, eps))).astype(np.float32)
+            block_db = _to_db(mag, scale)
 
             if downsample > 1:
                 block_db, carry = _max_reduce_with_carry(block_db, downsample, carry)
@@ -226,21 +299,32 @@ class _SpectrumMixin:
                 on_block(out_col, block_db)
                 out_col += bw
 
-        # Flush remaining carry
+        # Flush remaining carry: 部分组要取整组的 max，不能只取第一列
         if carry is not None and out_col < total_cols:
-            carry_col = carry[:, 0:1] if carry.ndim > 1 else carry.reshape(-1, 1)
+            carry_col = carry.max(axis=1, keepdims=True).astype(np.float32)
             acc[:, out_col] = carry_col[:, 0]
             on_block(out_col, carry_col)
             out_col += 1
 
         acc = acc[:, :out_col]
-        times = librosa.frames_to_time(
-            np.arange(out_col), sr=sr, hop_length=hop * downsample)
+
+        if downsample > 1:
+            # 每个输出列对应全局列序列的连续一组；取组中心而不是组起点
+            g_full = raw_cols // downsample
+            rem = raw_cols - g_full * downsample
+            centers = np.arange(out_col, dtype=np.float64)
+            full = min(g_full, out_col)
+            centers[:full] = np.arange(full) * downsample + (downsample - 1) / 2.0
+            if full < out_col:
+                centers[full] = full * downsample + (rem - 1) / 2.0
+            times = (centers * hop / sr).astype(np.float64)
+        else:
+            times = (np.arange(out_col) * hop / sr).astype(np.float64)
 
         # Write back to cache so second load is instant
         if self.filepath:
             with _stft_lock:
-                _stft_cache[(str(self.filepath), "standard", n_fft)] = (freqs, times, acc)
+                _stft_cache[self._cache_key("standard", n_fft, hop, window, "dbfs")] = (freqs, times, acc)
                 while len(_stft_cache) > _MAX_STFT_CACHE:
                     _stft_cache.popitem(last=False)
 
@@ -255,57 +339,58 @@ class _SpectrumMixin:
     def _multi_resolution_stft(
         self,
         window: str = "hann",
+        ref: str = "dbfs",
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Three-band multi-resolution STFT.
+        """Three-band multi-resolution STFT on a uniform row grid.
 
-        Low  (0–300 Hz)   : n_fft=8192 — fine frequency resolution for bass.
-        Mid  (300–3k Hz)  : n_fft=2048 — balanced.
-        High (3k–Nyquist) : n_fft=512  — sharp transients.
+        Bands: low 0–320 Hz (n_fft 8192), mid 320–2800 Hz (2048), high 2800 Hz–Nyquist (512),
+        fixed hop 512. Each band's rows are placed on the finest band's grid (spacing
+        sr/8192 ≈ 5.86 Hz at 48 kHz) by nearest-row mapping; rows covered by two bands
+        (the crossfade regions) take the max across bands.
+
+        Why a grid instead of concatenated band rows: the concatenated version jumped
+        backwards at band boundaries (`freqs` non-monotonic at rows 54 and 178 on a
+        48 kHz file), so the Y axis and the cursor reported the wrong frequency for
+        those rows; a plain grid keeps freqs strictly monotonic and needs no per-row
+        LUT in the shader.
         """
         import librosa
         audio = self.waveform
         sr = self.sample_rate
-        nyq = sr / 2.0
-
-        bands = [
-            ("low",  8192, 0.0,   320.0),
-            ("mid",  2048, 280.0, 3200.0),
-            ("high",  512, 2800.0, nyq),
-        ]
-
         hop = 512
-        results: list[np.ndarray] = []
-        band_freqs: list[np.ndarray] = []
+        nyq = sr / 2.0
+        grid_n = 8192
+        bands = ((8192, 0.0, 320.0), (2048, 320.0, 2800.0), (512, 2800.0, nyq))
 
-        for _name, n_fft, f_lo, f_hi in bands:
+        grid = librosa.fft_frequencies(sr=sr, n_fft=grid_n)
+        acc: np.ndarray | None = None
+
+        for n_fft, f_lo, f_hi in bands:
             f_hi = min(f_hi, nyq)
             S = librosa.stft(audio, n_fft=n_fft, hop_length=hop,
                              win_length=n_fft, window=window, center=True)
             freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
-            mag = np.abs(S)
-            mask = (freqs >= f_lo) & (freqs < f_hi)
+            mask = (freqs >= f_lo) & (freqs <= f_hi)
             if not np.any(mask):
                 continue
-            band_freqs.append(freqs[mask])
-            results.append(mag[mask, :])
-        if not results:
+            bf = freqs[mask]
+            win_arr = np.asarray(librosa.filters.get_window(window, n_fft), dtype=np.float32)
+            scale = _amp_scale(win_arr, n_fft, n_fft // 2 + 1).reshape(-1, 1)
+            amp = np.abs(S) * scale                                # 真满刻度幅度
+            band_rows = amp[mask, :]
+            # 每个 grid 行取本频段内最近的行（重叠区跨频段取 max）
+            idx = np.clip(np.searchsorted(bf, grid), 0, len(bf) - 1)
+            lo = np.clip(idx - 1, 0, len(bf) - 1)
+            nearest = np.where(np.abs(bf[lo] - grid) < np.abs(bf[idx] - grid), lo, idx)
+            inside = (grid >= f_lo) & (grid <= f_hi)
+            vals = band_rows[nearest, :]
+            acc = vals if acc is None else np.maximum(acc, vals * inside[:, None])
+
+        if acc is None:
             raise RuntimeError("Multi-resolution STFT produced no bands")
-        mag_combined = np.vstack(results).astype(np.float32)
-        freqs_combined = np.concatenate(band_freqs)
-
-        if not np.all(np.diff(freqs_combined) > 0):
-            mask = np.concatenate([[True], np.diff(freqs_combined) > 0])
-            freqs_combined = freqs_combined[mask]
-            mag_combined = mag_combined[mask]
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            db = librosa.amplitude_to_db(mag_combined, ref=np.max(mag_combined), top_db=None)
-
-        times = librosa.frames_to_time(
-            np.arange(db.shape[1]), sr=sr, hop_length=hop)
-
-        return freqs_combined, times, db
+        db = _to_db(acc, 1.0, ref)
+        times = librosa.frames_to_time(np.arange(db.shape[1]), sr=sr, hop_length=hop)
+        return grid.astype(np.float64), times, db.astype(np.float32)
 
     # ------------------------------------------------------------------
     # Reassigned Spectrogram (iZotope RX style)
@@ -316,81 +401,59 @@ class _SpectrumMixin:
         hop_length: int | None = None,
         win_length: int | None = None,
         window: str = "hann",
+        ref: str = "dbfs",
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Heuristic phase-sharpened spectrogram.
+        """Auger–Flandrin phase reassignment (IEEE TASSP 1995).
 
-        Relocates STFT energy using first-order phase-like corrections. The
-        current implementation is a rendering heuristic, not a standards-
-        compliant Auger-Flandrin reassignment implementation; callers should
-        not treat its coordinates as calibrated instantaneous frequency or
-        group delay measurements.
+        Energy in each window slot is moved to (instantaneous frequency, group delay)
+        instead of staying at the bin centre:
+
+            f̂(k,j) = f_k − Im(D/X) · sr / 2π       D = STFT with window g'(m)
+            t̂(k,j) = j·hop/sr + Re(C/X) / sr       C = STFT with window m·g(m)
+
+        Sign and scaling were checked against ground truth: a linear chirp (instantaneous
+        frequency known analytically — matched within 1 Hz) and a single-sample click at a
+        known time (reassigned onto that time). Empty cells keep 0 amplitude.
         """
         import librosa
         audio = self.waveform
         sr = self.sample_rate
-        hop = hop_length or (n_fft // 4)
+        hop = self._resolve_hop(n_fft, hop_length)
         wlen = win_length or n_fft
 
-        # ── STFT magnitude ──
-        S = librosa.stft(audio, n_fft=n_fft, hop_length=hop,
-                         win_length=wlen, window=window, center=True)
+        win = np.asarray(librosa.filters.get_window(window, wlen), dtype=np.float64)
+        if len(win) < n_fft:
+            win = np.pad(win, (0, n_fft - len(win)))
+        gprime = np.gradient(win)                      # 窗导数
+        ramp = np.arange(n_fft) - wlen / 2.0           # 窗内局部时间（相对窗中心）
 
-        # ── Time-derivative STFT: multiply signal by time ramp ──
-        t_ramp = np.linspace(-1, 1, len(audio))
-        S_t = librosa.stft(audio * t_ramp, n_fft=n_fft, hop_length=hop,
-                           win_length=wlen, window=window, center=True)
+        X = librosa.stft(audio, n_fft=n_fft, hop_length=hop, window=win, center=True)
+        D = librosa.stft(audio, n_fft=n_fft, hop_length=hop, window=gprime, center=True)
+        C = librosa.stft(audio, n_fft=n_fft, hop_length=hop, window=win * ramp, center=True)
 
-        # ── Frequency-derivative STFT: multiply window by freq ramp ──
-        win = librosa.filters.get_window(window, wlen)
-        if wlen < n_fft:
-            win = np.pad(win, (0, n_fft - wlen))
-        w_ramp = (np.arange(n_fft) - n_fft / 2.0) / (n_fft / 2.0)
-        win_f = win * w_ramp
-        S_f = librosa.stft(audio, n_fft=n_fft, hop_length=hop,
-                           win_length=n_fft, window=win_f, center=True)
-
-        # ── Reassignment coordinates ──
-        eps = 1e-10
-        # Compute squared magnitude once in float64 — avoids a second np.abs call
-        S_real = S.real.astype(np.float64)
-        S_imag = S.imag.astype(np.float64)
-        S_sq_f64 = S_real ** 2 + S_imag ** 2
-        S_sq = S_sq_f64 + eps
-
-        omega_corr = np.imag(S_t * np.conj(S) / S_sq) / (2.0 * np.pi)
-
-        tau_corr = np.real(S_f * np.conj(S) / S_sq)
-
+        sq = np.abs(X).astype(np.float64) ** 2
+        sq_safe = sq + np.finfo(np.float64).eps
+        n_freqs, n_frames = X.shape
         freqs_base = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
-        n_freqs = len(freqs_base)
-        n_frames = S.shape[1]
 
-        mag = np.sqrt(S_sq_f64)
+        f_hat = freqs_base[:, None] - (np.imag(D * np.conj(X)) / sq_safe) * sr / (2.0 * np.pi)
+        t_hat = (np.arange(n_frames)[None, :] * hop + np.real(C * np.conj(X)) / sq_safe) / sr
 
-        f_new_all = freqs_base[:, None] + omega_corr * sr
-        f_new_all = np.clip(f_new_all, freqs_base[0], freqs_base[-1])
-        f_idx_all = np.searchsorted(freqs_base, f_new_all.ravel())
-        f_idx_all = f_idx_all.clip(0, n_freqs - 1).reshape(n_freqs, n_frames)
+        f_hat = np.clip(f_hat, freqs_base[0], freqs_base[-1])
+        t_hat = np.clip(t_hat, 0.0, (n_frames - 1) * hop / sr)
 
-        t_new_all = np.arange(n_frames)[None, :] + tau_corr * (hop / sr)
-        t_new_all = np.clip(t_new_all, 0, n_frames - 1)
-        t_idx_all = np.round(t_new_all).astype(int).clip(0, n_frames - 1)
+        f_idx = np.searchsorted(freqs_base, f_hat.ravel()).clip(0, n_freqs - 1).reshape(n_freqs, n_frames)
+        t_idx = np.rint(t_hat * sr / hop).astype(np.intp).clip(0, n_frames - 1)
 
-        # np.bincount is ~5-10x faster than np.add.at for large arrays
-        flat_idx = (f_idx_all.ravel() * n_frames + t_idx_all.ravel()).astype(np.intp)
+        flat = (f_idx.ravel() * n_frames + t_idx.ravel()).astype(np.intp)
         n_total = n_freqs * n_frames
-        mag_acc = np.bincount(flat_idx, weights=mag.ravel(), minlength=n_total).reshape(n_freqs, n_frames)
-        weight = np.bincount(flat_idx, minlength=n_total).reshape(n_freqs, n_frames).astype(np.float64)
+        mag = np.sqrt(sq)
+        acc = np.bincount(flat, weights=mag.ravel(), minlength=n_total).reshape(n_freqs, n_frames)
+        cnt = np.bincount(flat, minlength=n_total).reshape(n_freqs, n_frames)
+        acc = acc / np.maximum(cnt, 1.0)
 
-        mag_acc /= np.maximum(weight, 1.0)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            db = librosa.amplitude_to_db(mag_acc, ref=np.max(mag_acc), top_db=None)
-
-        times = librosa.frames_to_time(
-            np.arange(n_frames), sr=sr, hop_length=hop)
-
+        db = _to_db(acc, _amp_scale(win, n_fft, n_freqs), ref)
+        times = (np.arange(n_frames) * hop / sr).astype(np.float64)
         return freqs_base.astype(np.float64), times, db.astype(np.float32)
 
     # ------------------------------------------------------------------

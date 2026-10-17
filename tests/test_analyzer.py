@@ -4,6 +4,8 @@ Tests clipping detection, RMS, peak, DR, flatten_analysis, and i18n.
 Uses synthetic numpy signals exclusively.
 """
 
+import math
+
 import numpy as np
 import pytest
 from pathlib import Path
@@ -108,15 +110,15 @@ class TestClippingDetection:
 
 
 class TestDynamicRange:
-    """F4: DR = P95-P10 of R128 short-term loudness (LU), same family as LRA.
+    """DR = TT DR family: P95 - P10 over 300 ms K-weighted windows, ungated.
 
-    Needs >= ~9s of audio for 3 x 3s short-term blocks; shorter → DR == 0.
+    Needs >= ~3 x 300 ms windows. LRA is a different reading (3 s windows + double
+    gating) — the two must not be conflated.
     """
 
     def _dr(self, x):
         a = _make_analyzer_with_audio(np.asarray(x, dtype=np.float32))
-        st = a._short_term_loudness_values(a.data.T, a.sample_rate)
-        return a._measure_dynamic_range(st), a
+        return a._measure_dynamic_range(a.data), a
 
     @staticmethod
     def _alternating_loudness(sr=48000, secs=12):
@@ -150,20 +152,56 @@ class TestDynamicRange:
 
     def test_very_short_audio_has_no_loudness_range(self):
         a = _make_analyzer_with_audio(np.zeros(100, dtype=np.float32))
-        assert a._short_term_loudness_values(a.data.T, a.sample_rate) == []
-        assert a._measure_dynamic_range([]) == {"dr": 0.0}
+        assert a._short_term_loudness_values(a.data, a.sample_rate) == []
+        assert a._measure_dynamic_range(a.data) == {"dr": 0.0, "dr_basis": "none"}
 
     def test_single_sample_quality_analysis_is_safe(self):
         a = _make_analyzer_with_audio(np.zeros(1, dtype=np.float32))
         result = a.analyze_quality()
-        assert result["dynamic_range"] == {"dr": 0.0}
+        assert result["dynamic_range"]["dr"] == 0.0
         assert result["loudness"]["integrated_lufs"] == -np.inf
 
-    def test_dr_equals_lra(self):
-        # F4 (Option A): DR and LRA are the same R128 measurement.
-        a = _make_analyzer_with_audio(self._alternating_loudness().astype(np.float32))
+    def test_dr_is_tt_dr_not_lra(self):
+        """DR (TT, 300 ms 窗、无门控) 和 LRA (3 s 窗、门控) 是两个读数 —— 不能画等号。
+
+        在明暗交替的信号上两者接近；在打击型信号上 TT DR 明显大于 LRA。
+        """
+        sr = 48000
+        rng = np.random.default_rng(3)
+        n = sr * 20
+        x = rng.standard_normal(n) * 0.02
+        for i in range(20):
+            if i % 3 == 0:                      # 偶发强瞬态
+                s = i * sr
+                x[s:s + 2000] = rng.standard_normal(2000) * 0.9
+        a = _make_analyzer_with_audio(x.astype(np.float32))
         q = a.analyze_quality()
-        assert q["dynamic_range"]["dr"] == q["loudness"]["lra_lu"]
+        dr = q["dynamic_range"]
+        assert dr["dr_basis"] == "TT_DR_300ms_ungated"
+        assert dr["dr"] > q["loudness"]["lra_lu"] + 5.0
+
+    def test_dr_matches_independent_reference(self):
+        """DR 对照「整段一次性 K 滤波 + 逐 300 ms 窗」的直算参考。
+
+        不能拿 BS.1770 附录的手写表值系数当参考：直接喂给 lfilter 时极点模 > 1（不稳定），
+        结果是 nan。这里用同一套 DeMan 系数，但走一条完全独立的路径（不分块、不管状态），
+        锁住分块实现的数值正确性。
+        """
+        from scipy.signal import lfilter
+        from analyzer import loudness as r128
+
+        sr = 48000
+        x = self._alternating_loudness().astype(np.float64)
+        y = x.copy()
+        for b, a in r128.k_weight_coeffs(sr):
+            y = lfilter(b, a, y)
+        L = int(round(0.3 * sr))
+        vals = [r128.K_CONSTANT + 10 * math.log10(max(float(np.mean(y[i:i + L] ** 2)), 1e-300))
+                for i in range(0, len(x) - L + 1, L)]
+        ref = float(np.percentile(vals, 95) - np.percentile(vals, 10))
+        a = _make_analyzer_with_audio(x.astype(np.float32), sr)
+        got = a._measure_dynamic_range(a.data)["dr"]
+        assert abs(got - ref) < 0.05, (got, ref)
 
 
 class TestHighFreqCutoff:
@@ -231,18 +269,39 @@ class TestHighFreqCutoff:
 
 
 class TestReassignedSpectrogram:
-    def test_heuristic_mode_returns_finite_spectrogram(self):
+    def test_returns_finite_spectrogram(self):
         sr = 48000
         t = np.arange(sr // 4) / sr
         audio = (0.5 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
         a = _make_analyzer_with_audio(audio, sr)
-        freqs, times, db = a._reassigned_spectrogram(
-            n_fft=1024, hop_length=256
-        )
+        freqs, times, db = a._reassigned_spectrogram(n_fft=2048, hop_length=512)
         assert freqs.ndim == times.ndim == 1
         assert db.shape == (len(freqs), len(times))
         assert np.isfinite(db).all()
-        assert "heuristic" in a._reassigned_spectrogram.__doc__.lower()
+        assert "Auger" in a._reassigned_spectrogram.__doc__
+
+    def test_chirp_instantaneous_frequency(self):
+        """Auger–Flandrin 重分配后，啁啓的瞬时频率（解析已知）必须被逐帧读出。"""
+        sr = 48000
+        T = 2.0
+        t = np.arange(int(sr * T)) / sr
+        x = np.sin(2 * np.pi * (1000 * t + 3000 * t * t / (2 * T)))
+        a = _make_analyzer_with_audio(x.astype(np.float32), sr)
+        freqs, times, db = a._reassigned_spectrogram(n_fft=2048, hop_length=512)
+        bin_hz = sr / 2048
+        for j in (30, 60, 112, 150):
+            truth = 1000 + 3000 * (j * 512 / sr) / T
+            row = int(np.argmax(db[:, j]))
+            assert abs(freqs[row] - truth) <= bin_hz, (row, freqs[row], truth)
+
+    def test_transient_moves_to_true_time(self):
+        sr = 48000
+        x = np.zeros(sr, dtype=np.float32)
+        x[int(0.5 * sr)] = 1.0
+        a = _make_analyzer_with_audio(x, sr)
+        freqs, times, db = a._reassigned_spectrogram(n_fft=2048, hop_length=512)
+        col = int(np.argmax(db[40, :]))
+        assert abs(times[col] - 0.5) < 512 / sr, (times[col], col)
 
 
 class TestZeroCrossingRate:
@@ -470,3 +529,199 @@ class TestClippingIsolation:
         assert res["ok"] is True, (
             f"clean full-scale sine should not be a clip, got ok={res['ok']} count={res.get('count')}"
         )
+
+
+# ── R128 在原生采样率上（不再降到 12 kHz）───────────────────────────────
+
+class TestR128NativeRate:
+    """BS.1770 要求 K 权重在原始采样率上设计；降到 12 kHz 的 Nyquist 只有 6 kHz，
+    高架中心 16.8 kHz 整段被削掉。"""
+
+    def _gain(self, f, sr):
+        from analyzer import loudness as r128
+        tot = 1.0
+        for b, a in r128.k_weight_coeffs(int(sr)):
+            z = np.exp(2j * np.pi * f / int(sr))
+            tot *= np.polyval(b, z) / np.polyval(a, z)
+        return 20 * math.log10(abs(tot))
+
+    def test_k_weight_plateau_at_10khz(self):
+        from analyzer import loudness as r128
+        sr = 48000
+        assert 3.5 <= self._gain(10000, sr) <= 4.5, self._gain(10000, sr)
+        t = np.arange(3 * sr) / sr
+        x = (0.3 * np.sin(2 * np.pi * 10000 * t)).astype(np.float32)
+        a = _make_analyzer_with_audio(x, sr)
+        measured = r128.gate_mean(r128.block_loudnesses(a.data, sr, 0.4, 0.1))
+        expected = r128.K_CONSTANT + 10 * math.log10(0.3 ** 2 / 2) + self._gain(10000, sr)
+        assert abs(measured - expected) < 0.3, (measured, expected)
+
+    def test_chunked_equals_whole_file(self):
+        from scipy.signal import lfilter
+        from analyzer import loudness as r128
+        sr = 44100
+        rng = np.random.default_rng(5)
+        x = rng.standard_normal(sr * 6) * 0.2
+        y = x.copy()
+        for b, a in r128.k_weight_coeffs(sr):
+            y = lfilter(b, a, y)
+        L, H = int(round(0.4 * sr)), int(round(0.1 * sr))
+        ref = np.array([r128.K_CONSTANT + 10 * math.log10(max(float(np.mean(y[i:i + L] ** 2)), 1e-300))
+                        for i in range(0, len(x) - L + 1, H)])
+        got = r128.block_loudnesses(x[np.newaxis, :], sr, 0.4, 0.1, chunk_s=1.0)
+        assert len(got) == len(ref)
+        assert float(np.max(np.abs(got - ref))) < 1e-6, (got[:3], ref[:3])
+
+    def test_true_peak_covers_full_band(self):
+        from analyzer import loudness as r128
+        sr = 48000
+        t = np.arange(sr) / sr
+        x = 0.9 * np.sin(2 * np.pi * 16000 * t + 0.31)      # 采样点错过波峰
+        sample_peak = 20 * math.log10(float(np.max(np.abs(x))))
+        tp = r128.true_peak_dbtp(x[np.newaxis, :], sr)
+        assert tp is not None
+        assert tp > sample_peak + 0.4, (tp, sample_peak)
+        assert r128.true_peak_dbtp(x[np.newaxis, :], 11025) is None
+
+
+# ── 位深感知的削波门限（2 LSB）────────────────────────────────────────
+
+class TestClippingBitDepthThreshold:
+    def test_quantized_near_ceiling_not_flagged(self):
+        """16 bit 量化、峰 0.9994 的噪声离满刻度还差 >2 LSB —— 旧门限 0.999 会误报 160 次。"""
+        rng = np.random.default_rng(6)
+        r = rng.standard_normal(48000)
+        r = r / np.max(np.abs(r)) * 0.9994
+        x = (np.round(r * 32767) / 32767).astype(np.float32)
+        a = _make_analyzer_with_audio(x)
+        res = a._detect_clipping(a.data, a.sample_rate, "s16p")
+        assert res["ok"] is True and res["count"] == 0, res
+
+    def test_real_ceiling_run_still_flagged(self):
+        rng = np.random.default_rng(7)
+        x = np.round(rng.standard_normal(48000) * 1.3 * 32767) / 32767
+        x = np.clip(x, -1.0 + 1 / 32767, 1.0 - 1 / 32767)
+        a = _make_analyzer_with_audio(x.astype(np.float32))
+        res = a._detect_clipping(a.data, a.sample_rate, "s16p")
+        assert res["ok"] is False and res["count"] > 0, res
+
+
+# ── 多分辨率：统一行网格 ──────────────────────────────────────────────
+
+class TestMultiResolutionGrid:
+    def test_freqs_monotonic_and_no_holes(self):
+        import analyzer._state as st
+        st._stft_cache.clear()
+        sr = 44100
+        t = np.arange(sr) / sr
+        x = (0.2 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+        a = _make_analyzer_with_audio(x, sr)
+        freqs, times, db = a.spectrogram_db(mode="multi")
+        assert np.all(np.diff(freqs) > 0), "freqs must be strictly monotonic"
+        assert not np.all(db <= -120.0, axis=1).any(), "有行整行只有底噪（映射空洞）"
+
+    def test_tone_lands_on_expected_grid_row(self):
+        import analyzer._state as st
+        st._stft_cache.clear()
+        sr = 44100
+        t = np.arange(sr) / sr
+        x = (0.2 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+        a = _make_analyzer_with_audio(x, sr)
+        freqs, times, db = a.spectrogram_db(mode="multi")
+        row = int(np.argmax(db.max(axis=1)))
+        # 1 kHz 落在 mid 频段（n_fft=2048 → 21.5 Hz 一行）；最近映射会把这一行
+        # 铺到它周围几个 grid 行，argmax 取第一个。
+        assert abs(freqs[row] - 1000.0) <= sr / 2048, (row, freqs[row])
+
+
+# ── dBFS 参考 ─────────────────────────────────────────────────────────
+
+class TestDbfsReference:
+    def test_absolute_reference_is_true_dbfs(self):
+        import analyzer._state as st
+        st._stft_cache.clear()
+        sr = 48000
+        t = np.arange(sr) / sr
+        full = np.sin(2 * np.pi * 1000 * t).astype(np.float32)
+        quiet = (0.01 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+        a, b = _make_analyzer_with_audio(full, sr), _make_analyzer_with_audio(quiet, sr)
+        p_full = float(a.spectrogram_db(n_fft=2048)[2].max())
+        st._stft_cache.clear()          # 两个 analyzer 共用同一个假路径 → 缓存键会撞
+        p_quiet = float(b.spectrogram_db(n_fft=2048)[2].max())
+        assert abs((p_full - p_quiet) - 40.0) < 0.05, (p_full, p_quiet)
+        assert -1.2 <= p_full <= -0.2, p_full      # 窗增益 + 半 bin 损失 ≈ −0.6 dB
+
+    def test_ref_peak_is_a_display_option(self):
+        import analyzer._state as st
+        st._stft_cache.clear()
+        sr = 48000
+        t = np.arange(sr) / sr
+        x = (0.01 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+        a = _make_analyzer_with_audio(x, sr)
+        assert abs(float(a.spectrogram_db(n_fft=2048, ref="peak")[2].max())) < 1e-4
+
+
+# ── 缓存键（UI 快路径必须与分析器一致）───────────────────────────────
+
+class TestCacheKey:
+    def test_key_shape(self):
+        a = _make_analyzer_with_audio(np.zeros(4800, dtype=np.float32))
+        k = a._cache_key("standard", 2048, 256, "hann", "dbfs")
+        assert k[2] == "standard" and k[3] == 2048 and k[4] == 256
+        assert k[5] == "hann" and k[6] == "dbfs"
+        for other in (("multi", 2048, 256, "hann", "dbfs"),
+                      ("standard", 4096, 256, "hann", "dbfs"),
+                      ("standard", 2048, 512, "hann", "dbfs"),
+                      ("standard", 2048, 256, "blackman", "dbfs"),
+                      ("standard", 2048, 256, "hann", "peak")):
+            assert a._cache_key(*other) != k, other
+
+    def test_cached_result_and_invalidate(self):
+        import analyzer._state as st
+        st._stft_cache.clear()
+        rng = np.random.default_rng(2)
+        a = _make_analyzer_with_audio((rng.standard_normal(48000) * 0.1).astype(np.float32))
+        freqs, times, db = a.spectrogram_db(n_fft=2048)
+        hit = a.cached_result("standard", 2048)
+        assert hit is not None and np.array_equal(hit[2], db)
+        assert a.cached_result("multi", 2048) is None
+        assert a.invalidate_cache("standard", 2048) == 1
+        assert a.cached_result("standard", 2048) is None
+        st._stft_cache.clear()
+
+
+# ── 流式分组：整组 max（含最后的半组）+ 组中心时间 ─────────────────────
+
+class TestStreamingGrouping:
+    def test_partial_last_group_and_centers(self):
+        from scipy.signal import get_window
+        from analyzer.spectrum import _amp_scale, _to_db
+        import analyzer._state as st
+        st._stft_cache.clear()
+
+        sr = 48000
+        n = sr * 6
+        rng = np.random.default_rng(7)
+        x = (rng.standard_normal(n) * 0.2).astype(np.float32)
+        a = _make_analyzer_with_audio(x, sr)
+        a.TARGET_FRAMES = 4                       # 强制分组
+        freqs, times, acc = a.spectrogram_db_streaming(
+            n_fft=2048, on_init=lambda f, t, h: None,
+            on_block=lambda i, b: None, cancel_check=lambda: False)
+
+        n_fft, n_freqs = 2048, 1025
+        hop = a._resolve_hop(n_fft, None)
+        padded = np.pad(x, n_fft // 2, mode="reflect")
+        raw = 1 + (len(padded) - n_fft) // hop
+        ds = raw // a.TARGET_FRAMES + 1
+        win = get_window("hann", n_fft, fftbins=True)
+        scale = _amp_scale(win, n_fft, n_freqs)
+        cols = np.stack([_to_db(np.abs(np.fft.rfft(padded[c * hop:c * hop + n_fft] * win))
+                                .astype(np.float32), scale) for c in range(raw)], axis=1)
+        ref = np.stack([cols[:, k:k + ds].max(axis=1) for k in range(0, raw, ds)], axis=1)
+
+        assert acc.shape == ref.shape
+        assert np.allclose(acc, ref, atol=1e-4), (acc.shape, ref.shape)
+        centers = [(k + (min(ds, raw - k) - 1) / 2) * hop / sr for k in range(0, raw, ds)]
+        assert np.allclose(times, centers, atol=1e-9), (times, centers)
+        st._stft_cache.clear()

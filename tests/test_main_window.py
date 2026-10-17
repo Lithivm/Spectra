@@ -60,10 +60,17 @@ class TestIsAudio:
 class TestDragDrop:
     """Test drag-and-drop file handling."""
 
-    def test_open_file_accepted_audio(self, app):
+    def test_open_file_accepted_audio(self, app, monkeypatch):
+        """不能真的弹模态对话框（会挂住）——把 getOpenFileName 打桩成返回一个音频路径。"""
+        from ui.main_window import MainWindow
+        monkeypatch.setattr(
+            QFileDialog, "getOpenFileName",
+            staticmethod(lambda parent, title, directory, name_filter: ("/tmp/song.mp3", "Audio Files (*.mp3)")),
+        )
         _build_main_window(app)
         result = QFileDialog.getOpenFileName(None, "Open Audio", "", "Audio Files (*.mp3 *.wav *.ogg *.flac)")
-        assert isinstance(result, tuple)
+        assert isinstance(result, tuple) and len(result) == 2
+        assert MainWindow._is_audio(result[0]), result[0]
 
     def test_palette_switch(self, app):
         mw = _build_main_window(app)

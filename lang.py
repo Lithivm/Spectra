@@ -22,20 +22,20 @@ def t(zh: str, en: str) -> str:
 def toggle_lang() -> str:
     global LANG
     LANG = "en" if LANG == "zh" else "zh"
-    # Prune dead weak references before dispatching
-    alive: list = []
-    for entry in _listeners:
-        if isinstance(entry, weakref.ref):
-            cb = entry()
-            if cb is not None:
-                alive.append(entry)
-                cb(LANG)
-            # else: dead ref, skip and don't re-add
-        else:
-            alive.append(entry)
-            entry(LANG)
-    if len(alive) < len(_listeners):
-        _listeners[:] = alive
+    # 遍历副本：回调里可能调用 unsubscribe() 修改 _listeners（边迭代边改会崩）
+    dead: list = []
+    for entry in _listeners[:]:
+        cb = entry() if isinstance(entry, weakref.ref) else entry
+        if cb is None:
+            dead.append(entry)  # 弱引用已失效
+            continue
+        try:
+            cb(LANG)
+        except Exception:
+            # 控件已半销毁（RuntimeError）等 —— 丢掉这条，不影响其它监听者
+            dead.append(entry)
+    if dead:
+        _listeners[:] = [e for e in _listeners if not any(e is d for d in dead)]
     return LANG
 
 
@@ -56,7 +56,18 @@ def on_lang_change(cb):
     def unsubscribe():
         # Try removing as weak ref first, then as strong ref
         for entry in _listeners[:]:
-            if entry is cb or (isinstance(entry, weakref.ref) and entry() is cb):
+            if entry is cb:
+                target = True
+            elif isinstance(entry, weakref.ref):
+                # 绑定方法每次取出的对象都不是同一个，只能比 ==（不能用 is）
+                try:
+                    alive_cb = entry()
+                    target = alive_cb is not None and alive_cb == cb
+                except Exception:
+                    target = False
+            else:
+                target = False
+            if target:
                 try:
                     _listeners.remove(entry)
                 except ValueError:
