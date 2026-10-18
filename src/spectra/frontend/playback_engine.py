@@ -3,19 +3,37 @@
 Position tracking: simple frame counter in the audio callback (no DAC
 time arithmetic in the hot path — avoids jitter and rounding noise).
 UI position queries use stream.time from the main thread.
+
+输出通道（系统 + WASAPI 共享/独占）由 ``backend.output_devices`` 枚举，本文件只负责：
+按通道开流、按格式量化、独占失败自动回退共享，以及切换时保住播放位置。
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import replace
+
 import numpy as np
 import sounddevice as sd
 
-from spectra.backend.convert import prepare_channels
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from spectra.backend.convert import prepare_channels, quantize
+from spectra.backend.output_devices import (
+    ChannelCapability,
+    OutputChannel,
+    StreamInfo,
+    WASAPI_HOST_API,
+    enumerate_channels,
+)
+
 logger = logging.getLogger(__name__)
+
+# 独占优先 float32（零量化，本机 DAC 可用），失败降级 int32，再降级 int16。
+# 共享固定 float32 —— PortAudio 共享路径没有 int32 收益。
+DTYPE_PREFERENCE_EXCLUSIVE = ("float32", "int32", "int16")
+DTYPE_PREFERENCE_SHARED = ("float32",)
 
 
 def _resample(audio: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
@@ -58,16 +76,25 @@ class PlaybackEngine(QObject):
     -------
     state_changed(str)
         One of ``'playing'``, ``'paused'``, ``'stopped'``.
+    output_ready(StreamInfo)
+        实际生效的输出通道（设备名 / 格式 / 实际采样率 / 是否直通 / 是否回退）。
+        UI 的状态栏与展开列表据此显示。
     """
 
     state_changed = pyqtSignal(str)
+    output_ready = pyqtSignal(object)
 
-    def __init__(self, parent: QObject | None = None):
+    def __init__(self, parent: QObject | None = None,
+                 channel: OutputChannel | None = None):
         super().__init__(parent)
-        self._audio: np.ndarray | None = None       # (channels, samples) float32
-        self._sample_rate: int = 0
+        self._source_audio: np.ndarray | None = None  # float32 (channels, samples)，文件原始率
+        self._source_sr: int = 0
+        self._audio: np.ndarray | None = None         # 按目标格式/目标率排好
+        self._sample_rate: int = 0                    # 流实际跑的率
         self._total_frames: int = 0
         self.channels: int = 1
+        self._dtype: str = "float32"
+
         self._stream: sd.OutputStream | None = None
         self._stream_start_dac: float = 0.0
         # 流代数：每次关闭/新建流自增。sounddevice 的 finished_callback 是异步的，
@@ -75,40 +102,110 @@ class PlaybackEngine(QObject):
         self._stream_gen: int = 0
         self._start_frame: int = 0
         self._state: str = "stopped"
-        self._device_sr: int = 0  # WASAPI device sample rate
 
         # Frame counter — only touched in the audio callback (real-time thread)
         self._cb_frame: int = 0
         self._cb_lock = threading.Lock()
 
-        # Probe WASAPI device sample rate once
-        self._probe_wasapi()
+        self._channel: OutputChannel | None = channel
+        self._capabilities: dict[str, ChannelCapability] = {}
+        self._info: StreamInfo | None = None
+        # 构造时不探测：独占能力只能真开一次流才知道，构造就开流会白抢独占，
+        # 测试也没法脱机跑。UI 在启动时按需探一次（选中通道时），结果缓存。
 
-    def _probe_wasapi(self) -> None:
-        """Find WASAPI default output device and its sample rate."""
-        try:
-            for api in sd.query_hostapis():
-                if api["name"] == "Windows WASAPI":
-                    dev_idx = api["default_output_device"]
-                    if dev_idx >= 0:
-                        self._wasapi_device = dev_idx
-                        self._device_sr = int(sd.query_devices(dev_idx)["default_samplerate"])
-                        return
-        except Exception:
-            pass
-        self._wasapi_device = None
-        self._device_sr = 0
+    # ------------------------------------------------------------------
+    # 输出通道
+    # ------------------------------------------------------------------
+    @property
+    def channel(self) -> OutputChannel | None:
+        return self._channel if self._channel is not None else self._default_channel()
 
-    def _device_channels(self) -> int:
-        """当前输出设备的输出声道数（拿不到就当 2）。"""
+    @property
+    def info(self) -> StreamInfo | None:
+        return self._info
+
+    def _default_channel(self) -> OutputChannel | None:
+        """没选通道时的兜底：sounddevice 默认输出设备（系统那条）。"""
         try:
-            idx = self._wasapi_device
-            if idx is None:
-                idx = sd.default.device[1]
-            return max(1, int(sd.query_devices(idx)["max_output_channels"]))
+            entries = enumerate_channels(sd.query_devices(), sd.query_hostapis(),
+                                         sd.default.device[1])
         except Exception:
-            logger.exception("读取输出设备声道数失败，按 2 声道处理")
-            return 2
+            logger.exception("枚举输出通道失败")
+            return None
+        return entries[0] if entries else None
+
+    def dtype_preference(self, channel: OutputChannel) -> tuple[str, ...]:
+        return DTYPE_PREFERENCE_EXCLUSIVE if channel.mode == "exclusive" else DTYPE_PREFERENCE_SHARED
+
+    def requested_sr(self, channel: OutputChannel, source_sr: int | None = None) -> int:
+        """向设备请求的采样率。
+
+        独占按文件采样率直接请求（成功 = 直通，设备被切到文件原生率）；
+        共享必须用 mix format 率（本机 88200）→ 文件率不同就必然 SRC。
+        """
+        if channel.mode == "exclusive" and source_sr:
+            return int(source_sr)
+        return int(channel.mix_sr)
+
+    def capability(self, channel: OutputChannel) -> ChannelCapability:
+        """这台设备在这个模式到底能不能开（缓存，每个通道只探一次）。"""
+        key = channel.key
+        if key in self._capabilities:
+            return self._capabilities[key]
+        cap = self._try_channel(channel)
+        self._capabilities[key] = cap
+        self._publish_info(self._info_from(cap))
+        return cap
+
+    def select_output(self, channel: OutputChannel) -> ChannelCapability:
+        """切输出通道：先关流再开流，播放位置按秒保住（换率后重算帧数）。"""
+        cap = self.capability(channel)
+        was_playing = self._state == "playing"
+        position = self.get_position()
+        self._channel = channel
+        if self._source_audio is not None:
+            self._apply(cap)
+            self._set_frames_from_seconds(position)
+        if was_playing:
+            self._start_stream()
+        else:
+            self._publish_info(self._info_from(cap))
+        return cap
+
+    def _try_channel(self, channel: OutputChannel) -> ChannelCapability:
+        """按格式偏好试开一次。独占失败 → 自动回退同设备的共享，并如实记录。
+
+        回退不静默：``fallback_from`` 记着原请求，UI 的状态栏/列表据此显示「已回退」。
+        """
+        target = channel
+        last_error: str | None = None
+        for attempt in range(2):
+            for dtype in self.dtype_preference(target):
+                try:
+                    stream = self._open_once(target, dtype, for_stream=False)
+                except Exception as exc:
+                    last_error = str(exc)
+                    logger.warning("打不开 %s（%s/%s）: %s",
+                                   target.device_name, target.mode, dtype, exc)
+                    continue
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+                return ChannelCapability(
+                    channel=target, ok=True, dtype=dtype,
+                    fallback_from=None if attempt == 0 else channel,
+                )
+            if target.mode == "exclusive":
+                target = replace(target, mode="shared")
+                logger.warning("独占失败，自动回退共享：%s（非直通）", target.device_name)
+                continue
+            break
+        return ChannelCapability(
+            channel=target, ok=False, dtype=self.dtype_preference(target)[0],
+            error=last_error or "无法打开输出通道",
+            fallback_from=None if target.key == channel.key else channel,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -121,21 +218,18 @@ class PlaybackEngine(QObject):
         mono 复制成设备声道数（通常 2），不依赖 Windows 引擎的 upmix。
         """
         self.stop()
-        audio = prepare_channels(audio, self._device_channels())
-        self.channels = int(audio.shape[0])
-        audio = audio.astype(np.float32)
-        # Resample to WASAPI device rate if needed
-        if self._device_sr > 0 and sample_rate != self._device_sr:
-            try:
-                audio = _resample(audio, sample_rate, self._device_sr)
-                sample_rate = self._device_sr
-            except Exception:
-                # 重采样不可用 —— 保留原采样率，交给 stream 自己去协商（可能失败但不会变速）
-                logger.exception("Resample %s -> %s failed, keeping source rate",
-                                 sample_rate, self._device_sr)
-        self._audio = np.ascontiguousarray(audio)
-        self._sample_rate = sample_rate
-        self._total_frames = self._audio.shape[1]
+        channel = self.channel
+        target_channels = int(channel.max_channels) if channel is not None else 2
+        self._source_audio = prepare_channels(audio, target_channels)
+        self._source_sr = int(sample_rate)
+        self.channels = int(self._source_audio.shape[0])
+
+        cap = self._capabilities.get(channel.key) if channel is not None else None
+        if cap is None or not cap.ok:
+            # load 时不探测（启动时 UI 已探过一次）；没结果就按 float32 + mix 率处理
+            cap = ChannelCapability(channel=channel, ok=True, dtype="float32", probed=False)
+        self._apply(cap)
+        self._publish_info(self._info_from(cap))
 
     def play(self, start_seconds: float | None = None) -> None:
         """Start or resume playback from *start_seconds*."""
@@ -239,35 +333,79 @@ class PlaybackEngine(QObject):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+    def _apply(self, cap: ChannelCapability) -> None:
+        """把源数据按当前通道的目标率/目标格式排好：直通就不重采样。"""
+        if self._source_audio is None:
+            return
+        target_sr = self.requested_sr(cap.channel, self._source_sr) if cap.channel else self._source_sr
+        if target_sr != self._source_sr:
+            try:
+                self._audio = quantize(_resample(self._source_audio, self._source_sr, target_sr), cap.dtype)
+            except Exception:
+                logger.exception("Resample %s -> %s failed, keeping source rate",
+                                 self._source_sr, target_sr)
+                self._audio = quantize(self._source_audio, cap.dtype)
+                target_sr = self._source_sr
+        else:
+            self._audio = quantize(self._source_audio, cap.dtype)
+        self._sample_rate = target_sr
+        self._total_frames = int(self._audio.shape[1])
+        self.channels = int(self._audio.shape[0])
+        self._dtype = cap.dtype
+
+    def _set_frames_from_seconds(self, seconds: float) -> None:
+        frame = max(0, min(int(round(seconds * self._sample_rate)), max(self._total_frames - 1, 0)))
+        with self._cb_lock:
+            self._start_frame = frame
+            self._cb_frame = frame
+
     def _start_stream(self) -> None:
         self._close_stream()
-        try:
-            kwargs: dict = {}
-            if self._wasapi_device is not None:
-                kwargs = {
-                    "device": self._wasapi_device,
-                    "extra_settings": sd.WasapiSettings(exclusive=False),
-                }
-            self._stream_gen += 1
-            gen = self._stream_gen
-            self._stream = sd.OutputStream(
-                samplerate=self._sample_rate,
-                channels=self.channels,
-                dtype='float32',
-                blocksize=0,
-                latency='high',      # use larger buffer to avoid underruns
-                callback=self._callback,
-                # 带上代数：只有「当前流」的自然结束才改写计数器
-                finished_callback=lambda g=gen: self._on_stream_finished(g),
-                **kwargs,
-            )
-            self._stream.start()
-            self._stream_start_dac = self._stream.time
-            self._set_state("playing")
-        except Exception:
-            logger.exception("Failed to start audio stream")
-            self._close_stream()
+        cap = self.channel and self.capability(self.channel)
+        if cap is None or not cap.ok or self._audio is None:
+            if cap is not None:
+                self._publish_info(self._info_from(cap))
             self._set_state("stopped")
+            return
+        try:
+            stream = self._open_once(cap.channel, cap.dtype, for_stream=True)
+        except Exception as exc:
+            # 真开流失败（设备被占/格式被拒）→ 重新判定一次并如实报告，不静默换设备
+            cap = self._try_channel(cap.channel)
+            self._apply(cap)
+            if not cap.ok:
+                self._publish_info(self._info_from(cap, error=str(exc)))
+                self._set_state("stopped")
+                return
+            try:
+                stream = self._open_once(cap.channel, cap.dtype, for_stream=True)
+            except Exception as exc2:
+                logger.exception("Failed to start audio stream")
+                self._publish_info(self._info_from(cap, error=str(exc2)))
+                self._set_state("stopped")
+                return
+        self._stream = stream
+        self._stream_start_dac = stream.time
+        self._publish_info(self._info_from(cap, actual_sr=int(stream.actual_samplerate)))
+        self._set_state("playing")
+
+    def _open_once(self, channel: OutputChannel, dtype: str, *, for_stream: bool):
+        samplerate = self._sample_rate if for_stream else self.requested_sr(channel, self._source_sr)
+        kwargs: dict = {
+            "samplerate": samplerate,
+            "channels": self.channels,
+            "dtype": dtype,
+            "blocksize": 0,
+            "latency": "high",      # use larger buffer to avoid underruns
+            "device": channel.device_index,
+        }
+        if channel.host_api == WASAPI_HOST_API:
+            kwargs["extra_settings"] = sd.WasapiSettings(exclusive=channel.mode == "exclusive")
+        if for_stream:
+            gen = self._stream_gen
+            kwargs["callback"] = self._callback
+            kwargs["finished_callback"] = lambda g=gen: self._on_stream_finished(g)
+        return sd.OutputStream(**kwargs)
 
     def _close_stream(self) -> None:
         # 先推进代数（旧流的 finished 回调随后一律被忽略），再真正关闭
@@ -298,7 +436,7 @@ class PlaybackEngine(QObject):
             outdata[:n_valid] = self._audio[:, start:end].T
 
         if n_valid < frames:
-            outdata[n_valid:] = 0.0
+            outdata[n_valid:] = 0
             raise sd.CallbackStop
 
     def _on_stream_finished(self, gen: int | None = None) -> None:
@@ -313,6 +451,24 @@ class PlaybackEngine(QObject):
             self._start_frame = 0
             self._cb_frame = 0
         self._set_state("stopped")
+
+    def _info_from(self, cap: ChannelCapability, actual_sr: int | None = None,
+                   error: str | None = None) -> StreamInfo:
+        requested = self.requested_sr(cap.channel, self._source_sr) if cap.channel else 0
+        return StreamInfo(
+            channel=cap.channel,
+            dtype=cap.dtype,
+            source_sr=self._source_sr,
+            requested_sr=requested,
+            actual_sr=int(actual_sr if actual_sr is not None else requested),
+            error=error if error is not None else cap.error,
+            fallback_from=cap.fallback_from,
+        )
+
+    def _publish_info(self, info: StreamInfo) -> None:
+        if info != self._info:
+            self._info = info
+            self.output_ready.emit(info)
 
     def _set_state(self, state: str) -> None:
         if state != self._state:

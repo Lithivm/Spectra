@@ -40,3 +40,29 @@ def prepare_channels(audio: np.ndarray, target_channels: int) -> np.ndarray:
 
     fold = np.mean(audio, axis=0)
     return np.repeat(fold[np.newaxis, :], target_channels, axis=0)
+
+
+def quantize(audio: np.ndarray, dtype) -> np.ndarray:
+    """按输出格式量化 float 采样。
+
+    int32 必须**先限幅再乘**：``1.0 × 2³¹`` 在 float→int32 cast 时绕回成 ``INT32_MIN``
+    （实测 1.0 和 1.2 都绕回），所以全程在 float64 上算、clip 到 int32 区间再 cast。
+
+    24-bit 源 → int32 是 exact（``v/2²³ × 2³¹ = v·256``，float64 下精确）：目标格式是
+    int32 时不需要 dither；只有硬件把独占格式定在 24/16-bit 才有截断问题。
+    """
+    try:
+        dtype = np.dtype(dtype)
+    except TypeError as exc:
+        raise ValueError(f"不支持的输出格式: {dtype}") from exc
+
+    if dtype == np.dtype(np.float32):
+        return audio.astype(np.float32)
+
+    if dtype not in (np.dtype(np.int32), np.dtype(np.int16)):
+        raise ValueError(f"不支持的输出格式: {dtype}")
+
+    bits = 31 if dtype == np.dtype(np.int32) else 15
+    lo, hi = (INT32_MIN, INT32_MAX) if bits == 31 else (INT16_MIN, INT16_MAX)
+    scaled = np.rint(np.clip(audio.astype(np.float64), -1.0, 1.0) * 2.0 ** bits)
+    return np.clip(scaled, float(lo), float(hi)).astype(dtype)

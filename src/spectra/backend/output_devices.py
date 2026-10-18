@@ -149,3 +149,37 @@ def elide(text: str, budget: int, ellipsis: str = "…") -> str:
         return text
     keep = max(1, budget - len(ellipsis))
     return text[:keep] + ellipsis
+
+
+@dataclass(frozen=True)
+class ChannelCapability:
+    """一次探测的结果：这台设备在这个模式下到底能不能开。
+
+    独占能力只有真开一次流才知道（PortAudio 不报能力），所以这里存的是「实际可用」的
+    通道 —— 独占失败回退到共享时，``channel`` 是共享那条，``fallback_from`` 记着原请求。
+    """
+
+    channel: OutputChannel
+    ok: bool
+    dtype: str                          # 'float32' | 'int32' | 'int16'
+    error: str | None = None
+    fallback_from: OutputChannel | None = None
+    probed: bool = True                 # False = 还没探测过（UI 显示「未探测」）
+
+
+@dataclass(frozen=True)
+class StreamInfo:
+    """本次真正跑起来的流：UI 状态栏/调试用。"""
+
+    channel: OutputChannel
+    dtype: str
+    source_sr: int          # 文件采样率
+    requested_sr: int       # 向设备请求的率（独占按文件率请求；共享必用 mix format 率）
+    actual_sr: int
+    error: str | None = None
+    fallback_from: OutputChannel | None = None
+
+    @property
+    def passthrough(self) -> bool:
+        """直通 = 设备实际跑的采样率就是文件采样率（没有被 SRC）。"""
+        return self.actual_sr > 0 and self.actual_sr == self.source_sr

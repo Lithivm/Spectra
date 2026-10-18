@@ -215,11 +215,17 @@ class _NullNode:
 
 
 class _Recorder:
-    """顶掉 PlaybackEngine / WaveformWidget，只记录收到的数据形状。"""
+    """顶掉 PlaybackEngine / WaveformWidget，只记录收到的数据形状。
+
+    位置查询给固定值，否则 _on_playback_tick 会在事件循环里算 pos/dur 炸掉。
+    """
 
     def __init__(self):
         self.audio = None
         self.sample_rate = None
+        self.state = "stopped"
+        self.is_playing = False
+        self.duration = 1.0
 
     def load(self, audio, sample_rate):
         self.audio = np.asarray(audio)
@@ -228,6 +234,9 @@ class _Recorder:
     def set_audio(self, audio, sample_rate, duration):
         self.audio = np.asarray(audio)
         self.sample_rate = sample_rate
+
+    def get_position(self):
+        return 0.0
 
     def __getattr__(self, name):
         return _NullNode()
