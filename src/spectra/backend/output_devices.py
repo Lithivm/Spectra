@@ -67,11 +67,15 @@ class OutputChannel:
             parts.append(name or self.device_name)
         return " · ".join(parts)
 
-    def menu_label(self, tr: Callable[[str], str] | None = None, note: str | None = None) -> str:
-        """展开列表里的一行。``note`` 是 UI 追加的附注（mix 率 / 未探测 / 回退）。"""
+    def menu_label(self, tr: Callable[[str], str] | None = None, note: str | None = None,
+                    name: str | None = None) -> str:
+        """展开列表里的一行：模式 + 设备名（协议在分组表头上，这里不重复）。
+
+        ``note`` 是 UI 追加的附注（系统行补实际走的 host API / 不可用 / 回退），
+        ``name`` 是宽度不够时缩过的设备名。
+        """
         tr = tr or (lambda s: s)
-        base = f"{tr('系统') if self.mode == 'system' else tr('WASAPI')}"
-        base += f"（{tr(MODE_TR[self.mode])}） — {self.device_name}"
+        base = f"{tr(MODE_TR[self.mode])} — {name or self.device_name}"
         if note:
             base += f" · {note}"
         return base

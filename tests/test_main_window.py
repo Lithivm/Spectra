@@ -512,3 +512,50 @@ class TestOutputSelection:
         mw, eng = self._window(app, monkeypatch, engine=eng)
         assert mw._output_actions[exclusive.key].isEnabled() is False
         assert "不可用" in mw._output_actions[exclusive.key].text()
+
+    def test_output_box_is_fixed_size(self, app, monkeypatch):
+        """固定尺寸 —— 文案变短不能把框缩掉（宽度跳会顶开后面的控件）。"""
+        from spectra.frontend import main_window as mwmod
+        target = by_mode("exclusive")
+        mw, eng = self._window(app, monkeypatch, FakeSettings({"output_channel": target.key}))
+        size = (mw._output_btn.width(), mw._output_btn.height())
+        assert size == (mw._OUTPUT_BTN_W, mwmod.BTN_H)
+        # 换成长文案的通道、再换回短文案，尺寸不变
+        mw._apply_output(ChannelCapability(channel=by_mode("system"), ok=True, dtype="float32", probed=False))
+        assert (mw._output_btn.width(), mw._output_btn.height()) == size
+
+    def test_button_text_fits_the_fixed_box(self, app, monkeypatch):
+        target = by_mode("exclusive")
+        mw, eng = self._window(app, monkeypatch, FakeSettings({"output_channel": target.key}))
+        fm = mw._output_btn.fontMetrics()
+        usable = mw._OUTPUT_BTN_W - 24                 # 内边距 + 下拉箭头
+        assert mw._output_btn.text()
+        assert fm.horizontalAdvance(mw._output_btn.text()) <= usable
+        assert target.device_name in mw._output_btn.text()   # 装得下 → 显示全名
+
+    def test_menu_has_hover_highlight_and_fixed_width(self, app, monkeypatch):
+        """全局样式表里没有 QMenu → 悬停高亮得自带。"""
+        mw, eng = self._window(app, monkeypatch)
+        assert "QMenu::item:selected" in mw._output_menu.styleSheet()
+        assert mw._output_menu.minimumWidth() == mw._OUTPUT_MENU_W
+
+    def test_menu_groups_by_protocol(self, app, monkeypatch):
+        """表头体现协议（系统声音 vs WASAPI），行里只写模式 + 设备名。"""
+        mw, eng = self._window(app, monkeypatch)
+        headers = [a.text() for a in mw._output_menu.actions() if a.isSeparator()]
+        assert headers == ["系统声音（默认输出设备）", "WASAPI（共享 / 独占）"]
+        rows = {a.data().key: a.text() for a in mw._output_menu.actions() if not a.isSeparator()}
+        sys_e, exc_e, sh_e = by_mode("system"), by_mode("exclusive"), by_mode("shared")
+        # 系统行附注它实际走的 host API（这台机器默认设备可能是 WDM-KS）
+        assert rows[sys_e.key] == f"✓ 系统 — {sys_e.device_name} · MME"   # 默认选中 = 系统条
+        assert rows[exc_e.key] == "独占 — DAC B"
+        assert rows[sh_e.key] == "共享 — DAC B"
+
+    def test_check_marker_follows_selection(self, app, monkeypatch):
+        target = by_mode("exclusive")
+        mw, eng = self._window(app, monkeypatch)
+        mw._choose_output(target)
+        rows = {a.data().key: a.text() for a in mw._output_menu.actions() if not a.isSeparator()}
+        assert rows[target.key] == "✓ 独占 — DAC B"
+        assert not rows[by_mode("system").key].startswith("✓")
+

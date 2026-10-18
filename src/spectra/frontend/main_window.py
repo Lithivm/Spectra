@@ -32,7 +32,7 @@ from spectra.frontend.playback_engine import PlaybackEngine
 from spectra.backend.palette import PALETTE
 from spectra.backend import is_audio_file, SUPPORTED_EXTENSIONS
 from spectra.backend.output_devices import (
-    MODE_TR, ChannelCapability, OutputChannel, elide, parse_key, resolve_channel,
+    ChannelCapability, OutputChannel, elide, parse_key, resolve_channel,
 )
 
 logger = logging.getLogger(__name__)
@@ -194,6 +194,33 @@ def _toolbar_btn_qss() -> str:
         f"QPushButton, QToolButton {{ color: {TEXT_PRI}; background: {BG_BASE};"
         f" border: 1px solid {BORDER_MID}; border-radius: {CORNER_SM}px; }}"
         f" QPushButton:hover, QToolButton:hover {{ border-color: {ACCENT}; }}"
+    )
+
+
+def _output_btn_qss() -> str:
+    """输出通道按钮：固定尺寸，悬停/按下有底色反馈（只改描边太弱）。"""
+    return (
+        f"QToolButton {{ color: {TEXT_PRI}; background: {BG_BASE};"
+        f" border: 1px solid {BORDER_MID}; border-radius: {CORNER_SM}px;"
+        f" padding: 0 8px; font-size: {FS_MD}px; text-align: left; }}"
+        f" QToolButton:hover {{ background: {BG_RAISED}; border-color: {ACCENT}; }}"
+        f" QToolButton:pressed {{ background: {BG_SURFACE}; border-color: {ACCENT}; }}"
+    )
+
+
+def _output_menu_qss() -> str:
+    """展开列表：悬停高亮（QMenu 不在全局样式表里，得自带）。
+
+    分组表头是 disabled item，所以靠 ``:disabled`` 上色；真正不可用的行
+    文字里带「不可用」，不会和表头混淆。
+    """
+    return (
+        f"QMenu {{ background: {BG_SURFACE}; border: 1px solid {BORDER_MID};"
+        f" border-radius: {CORNER_SM}px; padding: 4px; font-size: {FS_MD}px; }}"
+        f" QMenu::item {{ color: {TEXT_PRI}; background: transparent;"
+        f" padding: 6px 18px 6px 10px; border-radius: {CORNER_SM}px; }}"
+        f" QMenu::item:selected {{ background: {BG_RAISED}; color: {ACCENT}; }}"
+        f" QMenu::item:disabled {{ color: {TEXT_DIM}; font-weight: 600; }}"
     )
 
 
@@ -883,14 +910,15 @@ class MainWindow(QMainWindow):
         self._play_btn.clicked.connect(self._on_playback_toggle)
         layout.addWidget(self._play_btn)
 
-        # 输出通道展开列表（协议 · 模式 · 设备名），紧挨播放按钮
+        # 输出通道展开列表（分组表头 = 协议，行 = 模式 + 设备名），紧挨播放按钮
         self._output_menu = QMenu(self)
+        self._output_menu.setStyleSheet(_output_menu_qss())
+        self._output_menu.setMinimumWidth(self._OUTPUT_MENU_W)
         self._output_btn = QToolButton()
         self._output_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._output_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self._output_btn.setFixedHeight(BTN_H)
-        self._output_btn.setMaximumWidth(200)
-        self._output_btn.setStyleSheet(_toolbar_btn_qss())
+        self._output_btn.setFixedSize(self._OUTPUT_BTN_W, BTN_H)
+        self._output_btn.setStyleSheet(_output_btn_qss())
         self._output_btn.setMenu(self._output_menu)
         layout.addWidget(self._output_btn)
 
@@ -1060,13 +1088,15 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # 输出通道文案里的固定术语（后端只认中文键，翻译在这里接）
     _OUTPUT_TR_EN = {"系统": "System", "共享": "Shared", "独占": "Exclusive",
-                     "WASAPI": "WASAPI", "回退": "fallback", "不可用": "unavailable"}
+                     "WASAPI": "WASAPI", "回退": "fallback", "不可用": "unavailable",
+                     "系统声音（默认输出设备）": "System sound (default device)",
+                     "WASAPI（共享 / 独占）": "WASAPI (shared / exclusive)"}
+    _OUTPUT_BTN_W = 220       # 固定尺寸：文案变短也不能缩
+    _OUTPUT_MENU_W = 340      # 展开列表固定宽度
+    _OUTPUT_ROW_CHARS = 34    # 菜单行里设备名上限（按字符数近似）
 
     def _tr(self, zh: str) -> str:
         return t(zh, self._OUTPUT_TR_EN.get(zh, zh))
-
-    def _mode_text(self, mode: str) -> str:
-        return self._tr(MODE_TR[mode])
 
     def _setup_output_selection(self) -> None:
         entries = list(self._playback.available_channels())
@@ -1090,22 +1120,35 @@ class MainWindow(QMainWindow):
         menu = self._output_menu
         menu.clear()
         self._output_actions = {}
-        for mode in ("system", "shared", "exclusive"):
-            group = [e for e in entries if e.mode == mode]
+        # 分组表头按协议走（系统声音 / WASAPI），行里只写模式 + 设备名
+        groups = (
+            (self._tr("系统声音（默认输出设备）"), lambda e: e.mode == "system"),
+            (self._tr("WASAPI（共享 / 独占）"), lambda e: e.mode != "system"),
+        )
+        for header, pick in groups:
+            group = [e for e in entries if pick(e)]
             if not group:
                 continue
-            menu.addSection(self._mode_text(mode))
+            menu.addSection(header)
             for e in group:
-                act = menu.addAction(e.device_name)
+                act = menu.addAction("")
                 act.setCheckable(True)
-                act.setChecked(current is not None and e.key == current.key)
                 act.setData(e)
                 cap = self._playback.cached_capability(e)
-                if cap is not None and not cap.ok:
-                    act.setEnabled(False)
-                    act.setText(f"{e.device_name}（{self._tr('不可用')}）")
+                unavailable = cap is not None and not cap.ok
+                act.setEnabled(not unavailable)
+                act.setText(self._row_text(e, checked=current is not None and e.key == current.key,
+                                          unavailable=unavailable))
                 act.triggered.connect(lambda _=False, ch=e: self._choose_output(ch))
                 self._output_actions[e.key] = act
+
+    def _row_text(self, ch: OutputChannel, *, checked: bool, unavailable: bool) -> str:
+        """菜单行：模式 — 设备名（协议在表头上）；系统行附注它实际走的 host API。"""
+        note = ch.host_api if ch.mode == "system" else None
+        text = ch.menu_label(tr=self._tr, note=note, name=elide(ch.device_name, self._OUTPUT_ROW_CHARS))
+        if unavailable:
+            text += f"（{self._tr('不可用')}）"
+        return ("✓ " if checked else "") + text
 
     @safe_slot
     def _choose_output(self, channel: OutputChannel) -> None:
@@ -1142,26 +1185,42 @@ class MainWindow(QMainWindow):
             self._playback.use_channel(cap.channel)
         ch = cap.channel
         for key, act in self._output_actions.items():
-            act.setChecked(key == ch.key)
-            if key == ch.key and not cap.ok:
-                act.setText(f"{ch.device_name}（{self._tr('不可用')}）")
-        if self._output_btn is not None:
-            self._output_btn.setText(ch.status_text(full=False, tr=self._tr))
-            self._output_btn.setToolTip(ch.status_text(full=True, tr=self._tr))
+            row = act.data()
+            checked = key == ch.key
+            cached = self._playback.cached_capability(row)
+            unavailable = cached is not None and not cached.ok
+            act.setChecked(checked)
+            act.setEnabled(not unavailable)
+            act.setText(self._row_text(row, checked=checked, unavailable=unavailable))
         self._render_output_text()
 
+    def _fit_chars(self, fm, px: int) -> int:
+        return max(6, int(px / max(1, int(fm.averageCharWidth()))))
+
     def _render_output_text(self) -> None:
-        if self._output_label is None:
-            return
         ch = self._current_output_channel()
         if ch is None:
-            self._output_label.setText("")
+            if self._output_btn is not None:
+                self._output_btn.setText("")
+            if self._output_label is not None:
+                self._output_label.setText("")
+            return
+        info = self._playback.info
+        suffix = f" · {self._tr('回退')}" if (info is not None and info.fallback_from is not None) else ""
+
+        # 按钮尺寸固定 → 装得下全名就显示全名，装不下退到协议 + 模式
+        if self._output_btn is not None:
+            fm = self._output_btn.fontMetrics()
+            usable = self._OUTPUT_BTN_W - 24          # 内边距 + 下拉箭头
+            full = ch.status_text(full=True, tr=self._tr, name=elide(ch.device_name, self._fit_chars(fm, usable)))
+            text = full + suffix if fm.horizontalAdvance(full + suffix) <= usable else ch.status_text(full=False, tr=self._tr)
+            self._output_btn.setText(text)
+            self._output_btn.setToolTip(ch.status_text(full=True, tr=self._tr) + suffix)
+
+        if self._output_label is None:
             return
         fm = self._output_label.fontMetrics()
-        full = ch.status_text(full=True, tr=self._tr)
-        info = self._playback.info
-        if info is not None and info.fallback_from is not None:
-            full += f" · {self._tr('回退')}"
+        full = ch.status_text(full=True, tr=self._tr) + suffix
         narrow = ch.status_text(full=False, tr=self._tr)
         # 宽度不够就缩到只剩协议；独占的「独占」标记保留 —— 它意味着静音其他应用
         spare = fm.horizontalAdvance(self._status_label.text()) + 2 * SIDE + 16

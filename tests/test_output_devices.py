@@ -130,5 +130,7 @@ class TestText:
 
     def test_menu_label_shape(self):
         e = resolve_channel(_entries(), "Windows WASAPI", "DAC", "exclusive")
-        assert e.menu_label() == "WASAPI（独占） — DAC"
-        assert e.menu_label(note="未探测") == "WASAPI（独占） — DAC · 未探测"
+        # 协议在分组表头上，行里不重复 —— 行只写模式 + 设备名
+        assert e.menu_label() == "独占 — DAC"
+        assert e.menu_label(note="不可用") == "独占 — DAC · 不可用"
+        assert e.menu_label(name=elide("Realtek Digital Output", 12)) == "独占 — Realtek Dig…"
