@@ -12,6 +12,7 @@ import threading
 import numpy as np
 import sounddevice as sd
 
+from spectra.backend.convert import prepare_channels
 from PyQt6.QtCore import QObject, pyqtSignal
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ class PlaybackEngine(QObject):
         self._audio: np.ndarray | None = None       # (channels, samples) float32
         self._sample_rate: int = 0
         self._total_frames: int = 0
+        self.channels: int = 1
         self._stream: sd.OutputStream | None = None
         self._stream_start_dac: float = 0.0
         # 流代数：每次关闭/新建流自增。sounddevice 的 finished_callback 是异步的，
@@ -97,14 +99,30 @@ class PlaybackEngine(QObject):
         self._wasapi_device = None
         self._device_sr = 0
 
+    def _device_channels(self) -> int:
+        """当前输出设备的输出声道数（拿不到就当 2）。"""
+        try:
+            idx = self._wasapi_device
+            if idx is None:
+                idx = sd.default.device[1]
+            return max(1, int(sd.query_devices(idx)["max_output_channels"]))
+        except Exception:
+            logger.exception("读取输出设备声道数失败，按 2 声道处理")
+            return 2
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
     def load(self, audio: np.ndarray, sample_rate: int) -> None:
-        """Feed a new audio buffer.  Stops any current playback."""
+        """Feed a new audio buffer.  Stops any current playback.
+
+        audio 是 (channels, samples)：真立体声。传 mixdown 会丢声像和左右差异
+        （不相关信号求和 ≈ −3 dB，反相内容相消），所以这里收多声道数据。
+        mono 复制成设备声道数（通常 2），不依赖 Windows 引擎的 upmix。
+        """
         self.stop()
-        if audio.ndim == 1:
-            audio = audio[np.newaxis, :]
+        audio = prepare_channels(audio, self._device_channels())
+        self.channels = int(audio.shape[0])
         audio = audio.astype(np.float32)
         # Resample to WASAPI device rate if needed
         if self._device_sr > 0 and sample_rate != self._device_sr:
@@ -234,7 +252,7 @@ class PlaybackEngine(QObject):
             gen = self._stream_gen
             self._stream = sd.OutputStream(
                 samplerate=self._sample_rate,
-                channels=self._audio.shape[0],
+                channels=self.channels,
                 dtype='float32',
                 blocksize=0,
                 latency='high',      # use larger buffer to avoid underruns

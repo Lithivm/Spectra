@@ -1151,7 +1151,9 @@ class MainWindow(QMainWindow):
         )
         logger.debug("波形渲染: %.2fs", time.perf_counter() - t0)
 
-        self._playback.load(analyzer.waveform, analyzer.sample_rate)
+        # 播放走真立体声：analyzer.data 是 (channels, samples)，不是 mixdown。
+        # 波形显示仍用 analyzer.waveform（单声道折叠，显示上更直观）。
+        self._playback.load(analyzer.data, analyzer.sample_rate)
         self._progress_slider.setRange(0, 1000)
         self._progress_slider.setValue(0)
 

@@ -1,4 +1,6 @@
 import sys
+
+import numpy as np
 import pytest
 from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel
 
@@ -195,3 +197,109 @@ class TestVisualUpgrade:
     def test_brand_logo_loaded(self, mw):
         assert mw._logo_ok is True
         assert mw._brand_label.pixmap() is not None
+
+
+# ── 播放声道路径 ───────────────────────────────────────────────────────
+
+class _NullNode:
+    """占位对象：属性访问返回自身，调用返回 None（用来顶掉 worker）。"""
+
+    def __call__(self, *args, **kwargs):
+        return None
+
+    def connect(self, *args, **kwargs):
+        return None
+
+    def __getattr__(self, name):
+        return self
+
+
+class _Recorder:
+    """顶掉 PlaybackEngine / WaveformWidget，只记录收到的数据形状。"""
+
+    def __init__(self):
+        self.audio = None
+        self.sample_rate = None
+
+    def load(self, audio, sample_rate):
+        self.audio = np.asarray(audio)
+        self.sample_rate = sample_rate
+
+    def set_audio(self, audio, sample_rate, duration):
+        self.audio = np.asarray(audio)
+        self.sample_rate = sample_rate
+
+    def __getattr__(self, name):
+        return _NullNode()
+
+
+class _FakeLoadWorker:
+    """顶掉 _load_worker：_on_load_done 的 sender() 为空时回落到它。"""
+
+    def __init__(self, analyzer):
+        self.analyzer = analyzer
+
+    def isRunning(self):
+        return False
+
+    def __getattr__(self, name):
+        return _NullNode()
+
+
+def _synth_stereo_analyzer():
+    from pathlib import Path
+    from spectra.backend.core import AudioAnalyzer
+
+    a = AudioAnalyzer()
+    a.data = np.vstack([np.array([0.4, 0.1, 0.2, -0.3], np.float32),
+                        np.array([-0.4, 0.2, 0.3, 0.5], np.float32)])
+    a.sample_rate = 48000
+    a.channels = 2
+    a.duration = a.data.shape[1] / a.sample_rate
+    a.filepath = Path("synth.wav")
+    a.metadata = {}
+    return a
+
+
+class TestPlaybackChannelPath:
+    """播放必须收到真立体声（analyzer.data），波形显示仍走 mixdown。"""
+
+    def test_playback_receives_stereo(self, app, monkeypatch):
+
+        from spectra.frontend import main_window as mwmod
+
+        mw = _build_main_window(app)
+        play_rec = _Recorder()
+        wave_rec = _Recorder()
+        monkeypatch.setattr(mw, "_playback", play_rec)
+        monkeypatch.setattr(mw._wave, "set_audio", wave_rec.set_audio)
+        monkeypatch.setattr(mw._meta, "load_metadata", lambda analyzer: None)
+        monkeypatch.setattr(mwmod, "_QualityWorker", lambda *a, **k: _NullNode())
+        monkeypatch.setattr(mwmod, "_SpectrumWorker", lambda *a, **k: _NullNode())
+
+        analyzer = _synth_stereo_analyzer()
+        monkeypatch.setattr(mw, "_load_worker", _FakeLoadWorker(analyzer))
+        mw._on_load_done()
+
+        assert play_rec.audio.shape == (2, analyzer.data.shape[1])
+        assert not np.allclose(play_rec.audio[0], play_rec.audio[1]), "播放被折叠成单声道"
+
+    def test_waveform_still_uses_mixdown(self, app, monkeypatch):
+
+        from spectra.frontend import main_window as mwmod
+
+        mw = _build_main_window(app)
+        play_rec = _Recorder()
+        wave_rec = _Recorder()
+        monkeypatch.setattr(mw, "_playback", play_rec)
+        monkeypatch.setattr(mw._wave, "set_audio", wave_rec.set_audio)
+        monkeypatch.setattr(mw._meta, "load_metadata", lambda analyzer: None)
+        monkeypatch.setattr(mwmod, "_QualityWorker", lambda *a, **k: _NullNode())
+        monkeypatch.setattr(mwmod, "_SpectrumWorker", lambda *a, **k: _NullNode())
+
+        analyzer = _synth_stereo_analyzer()
+        monkeypatch.setattr(mw, "_load_worker", _FakeLoadWorker(analyzer))
+        mw._on_load_done()
+
+        assert wave_rec.audio.ndim == 1
+        assert np.allclose(wave_rec.audio, np.mean(analyzer.data, axis=0))
