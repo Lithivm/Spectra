@@ -183,3 +183,11 @@ class StreamInfo:
     def passthrough(self) -> bool:
         """直通 = 设备实际跑的采样率就是文件采样率（没有被 SRC）。"""
         return self.actual_sr > 0 and self.actual_sr == self.source_sr
+
+
+def parse_key(key: str) -> tuple[str, str, str]:
+    """持久化键（host API 名 | 设备名 | 模式）→ 三元组。空键 → 空三元组。"""
+    parts = str(key or "").split("|")
+    if len(parts) != 3:
+        return ("", "", "")
+    return (parts[0], parts[1], parts[2])

@@ -124,14 +124,22 @@ class PlaybackEngine(QObject):
     def info(self) -> StreamInfo | None:
         return self._info
 
-    def _default_channel(self) -> OutputChannel | None:
-        """没选通道时的兜底：sounddevice 默认输出设备（系统那条）。"""
+    def available_channels(self) -> tuple[OutputChannel, ...]:
+        """可选输出通道（UI 的展开列表就读这个）。"""
         try:
-            entries = enumerate_channels(sd.query_devices(), sd.query_hostapis(),
-                                         sd.default.device[1])
+            return enumerate_channels(sd.query_devices(), sd.query_hostapis(),
+                                      sd.default.device[1])
         except Exception:
             logger.exception("枚举输出通道失败")
-            return None
+            return ()
+
+    def cached_capability(self, channel: OutputChannel) -> ChannelCapability | None:
+        """已探测过的通道返回结果，没探测过的返回 None（不触发探测）。"""
+        return self._capabilities.get(channel.key)
+
+    def _default_channel(self) -> OutputChannel | None:
+        """没选通道时的兜底：sounddevice 默认输出设备（系统那条）。"""
+        entries = self.available_channels()
         return entries[0] if entries else None
 
     def dtype_preference(self, channel: OutputChannel) -> tuple[str, ...]:
@@ -156,6 +164,12 @@ class PlaybackEngine(QObject):
         self._capabilities[key] = cap
         self._publish_info(self._info_from(cap))
         return cap
+
+    def use_channel(self, channel: OutputChannel) -> None:
+        """挂上通道但**不探测**（启动时先按持久化值挂上，探测由 UI 异步触发一次）。"""
+        self._channel = channel
+        self._publish_info(self._info_from(
+            ChannelCapability(channel=channel, ok=True, dtype="float32", probed=False)))
 
     def select_output(self, channel: OutputChannel) -> ChannelCapability:
         """切输出通道：先关流再开流，播放位置按秒保住（换率后重算帧数）。"""

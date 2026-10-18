@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from typing import Any
 
-from PyQt6.QtCore import QThread, Qt, pyqtSignal, QTimer, QRectF, QPointF, QSize
+from PyQt6.QtCore import QThread, QSettings, Qt, pyqtSignal, QTimer, QRectF, QPointF, QSize
 from PyQt6.QtGui import (
     QDragEnterEvent, QDropEvent, QColor, QPainter, QPixmap,
     QKeySequence, QShortcut, QGuiApplication,
@@ -23,7 +23,7 @@ from spectra.frontend.icons import render_icon
 from PyQt6.QtWidgets import (
     QFileDialog, QHBoxLayout, QVBoxLayout,
     QLabel, QMainWindow, QMessageBox, QStatusBar, QWidget,
-    QFrame, QPushButton, QComboBox, QSizePolicy,
+    QFrame, QPushButton, QComboBox, QToolButton, QMenu, QSizePolicy,
     QGraphicsDropShadowEffect, QGridLayout,
 )
 
@@ -31,6 +31,9 @@ from PyQt6.QtWidgets import (
 from spectra.frontend.playback_engine import PlaybackEngine
 from spectra.backend.palette import PALETTE
 from spectra.backend import is_audio_file, SUPPORTED_EXTENSIONS
+from spectra.backend.output_devices import (
+    MODE_TR, ChannelCapability, OutputChannel, elide, parse_key, resolve_channel,
+)
 
 logger = logging.getLogger(__name__)
 from spectra.frontend.metadata_panel import MetadataPanel
@@ -188,9 +191,9 @@ def _card(radius: int = CORNER_LG) -> QWidget:
 def _toolbar_btn_qss() -> str:
     """Unified toolbar button look — BG_BASE fill, matching the packaged build."""
     return (
-        f"QPushButton {{ color: {TEXT_PRI}; background: {BG_BASE};"
+        f"QPushButton, QToolButton {{ color: {TEXT_PRI}; background: {BG_BASE};"
         f" border: 1px solid {BORDER_MID}; border-radius: {CORNER_SM}px; }}"
-        f" QPushButton:hover {{ border-color: {ACCENT}; }}"
+        f" QPushButton:hover, QToolButton:hover {{ border-color: {ACCENT}; }}"
     )
 
 
@@ -505,6 +508,28 @@ class _PreloadWorker(QThread):
         self.ready.emit()
 
 
+class _ProbeWorker(QThread):
+    """启动时探测一次选中的输出通道。
+
+    独占能力只能真开一次流才知道（PortAudio 不报能力），所以探测 = 开一次流再关掉。
+    不在 GUI 线程跑：独占会静音其他应用，几十毫秒不能卡 UI。每个通道只探一次，
+    结果缓存在引擎里。
+    """
+    ready = pyqtSignal(object)   # ChannelCapability
+
+    def __init__(self, engine: PlaybackEngine, channel: OutputChannel) -> None:
+        super().__init__()
+        self._engine = engine
+        self._channel = channel
+
+    def run(self) -> None:
+        try:
+            self.ready.emit(self._engine.capability(self._channel))
+        except Exception:
+            logger.exception("输出通道探测失败")
+            self.ready.emit(None)
+
+
 class _QualityWorker(QThread):
     result_ready = pyqtSignal(object)  # 不叫 finished：避免遮蔽 QThread.finished
     progress = pyqtSignal(int)
@@ -558,7 +583,7 @@ class _BatchWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, settings: Any | None = None, playback: Any | None = None) -> None:
         super().__init__()
         self.setAcceptDrops(True)
         self._title = "Spectra"
@@ -582,7 +607,17 @@ class MainWindow(QMainWindow):
         self._slider_dragging = False
         self._logo_ok = False  # brand logo loaded from assets/logo.png
 
-        self._playback = PlaybackEngine(self)
+        # 输出通道（展开列表 + 状态栏 + 持久化）。持久化存的是 host API 名 + 设备名 + 模式，
+        # 不是 index —— 索引是机器相关的、拔插设备就会重排。
+        self._settings = settings if settings is not None else QSettings("Spectra", "Spectra")
+        self._output_entries: list[OutputChannel] = []
+        self._output_actions: dict[str, Any] = {}
+        self._output_btn: QToolButton | None = None
+        self._output_menu: QMenu | None = None
+        self._output_label: QLabel | None = None
+        self._probe_worker: _ProbeWorker | None = None
+
+        self._playback = playback if playback is not None else PlaybackEngine(self)
         self._playback_timer = QTimer(self)
         self._playback_timer.setInterval(30)
         self._playback_timer.timeout.connect(self._on_playback_tick)
@@ -590,6 +625,7 @@ class MainWindow(QMainWindow):
 
         self.setStyleSheet(APP_STYLESHEET)
         self._setup_ui()
+        self._setup_output_selection()
 
         # Background preload: warm up heavy libraries while user sees the window
         self._preload_worker = _PreloadWorker()
@@ -739,6 +775,7 @@ class MainWindow(QMainWindow):
         _grid.addWidget(self._progress_slider, 2, 0, 1, 3)
 
         self._playback.state_changed.connect(self._on_playback_state)
+        self._playback.output_ready.connect(self._on_output_ready)
         self._slider_dragging = False
         self._was_playing_before_drag = False
 
@@ -845,6 +882,17 @@ class MainWindow(QMainWindow):
         self._play_btn.setStyleSheet(_toolbar_btn_qss())
         self._play_btn.clicked.connect(self._on_playback_toggle)
         layout.addWidget(self._play_btn)
+
+        # 输出通道展开列表（协议 · 模式 · 设备名），紧挨播放按钮
+        self._output_menu = QMenu(self)
+        self._output_btn = QToolButton()
+        self._output_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._output_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self._output_btn.setFixedHeight(BTN_H)
+        self._output_btn.setMaximumWidth(200)
+        self._output_btn.setStyleSheet(_toolbar_btn_qss())
+        self._output_btn.setMenu(self._output_menu)
+        layout.addWidget(self._output_btn)
 
         layout.addStretch()
 
@@ -996,11 +1044,131 @@ class MainWindow(QMainWindow):
         self._zoom_hint.setStyleSheet(
             f"color: {TEXT_DIM}; font-size: {FS_SM}px; font-family: 'Consolas'; background: transparent;")
         sb.addWidget(self._zoom_hint)
+        # 输出通道：专用栏位，和文件信息（_status_label）分开
+        self._output_label = QLabel("")
+        self._output_label.setStyleSheet(
+            f"color: {TEXT_DIM}; font-size: {FS_SM}px; font-family: 'Consolas'; background: transparent;")
+        sb.addPermanentWidget(self._output_label)
         self._status_label = QLabel(t("就绪", "Ready"))
         self._status_label.setStyleSheet(
             f"color: {TEXT_DIM}; font-size: {FS_SM}px; font-family: 'Consolas'; background: transparent;")
         sb.addPermanentWidget(self._status_label)
         self.setStatusBar(sb)
+
+    # ------------------------------------------------------------------
+    # 输出通道：展开列表 + 状态栏 + 持久化 + 启动自动探测一次
+    # ------------------------------------------------------------------
+    # 输出通道文案里的固定术语（后端只认中文键，翻译在这里接）
+    _OUTPUT_TR_EN = {"系统": "System", "共享": "Shared", "独占": "Exclusive",
+                     "WASAPI": "WASAPI", "回退": "fallback", "不可用": "unavailable"}
+
+    def _tr(self, zh: str) -> str:
+        return t(zh, self._OUTPUT_TR_EN.get(zh, zh))
+
+    def _mode_text(self, mode: str) -> str:
+        return self._tr(MODE_TR[mode])
+
+    def _setup_output_selection(self) -> None:
+        entries = list(self._playback.available_channels())
+        self._output_entries = entries
+        key = str(self._settings.value("output_channel", "") or "")
+        stored = resolve_channel(entries, *parse_key(key)) if key else None
+        chosen = stored or (entries[0] if entries else None)
+        self._rebuild_output_menu(entries, chosen)
+        if chosen is None:
+            self._output_btn.setEnabled(False)
+            return
+        # 先按上次选的通道挂上（不探测），再触发启动探测一次
+        self._apply_output(ChannelCapability(channel=chosen, ok=True, dtype="float32", probed=False))
+        self._probe_worker = _ProbeWorker(self._playback, chosen)
+        self._probe_worker.ready.connect(self._on_probe_result)
+        self._probe_worker.start()
+
+    def _rebuild_output_menu(self, entries, current) -> None:
+        if self._output_menu is None:
+            return
+        menu = self._output_menu
+        menu.clear()
+        self._output_actions = {}
+        for mode in ("system", "shared", "exclusive"):
+            group = [e for e in entries if e.mode == mode]
+            if not group:
+                continue
+            menu.addSection(self._mode_text(mode))
+            for e in group:
+                act = menu.addAction(e.device_name)
+                act.setCheckable(True)
+                act.setChecked(current is not None and e.key == current.key)
+                act.setData(e)
+                cap = self._playback.cached_capability(e)
+                if cap is not None and not cap.ok:
+                    act.setEnabled(False)
+                    act.setText(f"{e.device_name}（{self._tr('不可用')}）")
+                act.triggered.connect(lambda _=False, ch=e: self._choose_output(ch))
+                self._output_actions[e.key] = act
+
+    @safe_slot
+    def _choose_output(self, channel: OutputChannel) -> None:
+        self._settings.setValue("output_channel", channel.key)
+        cap = self._playback.capability(channel)     # 缓存命中则不再开流
+        self._apply_output(cap)
+
+    @safe_slot
+    def _on_probe_result(self, cap) -> None:
+        if cap is not None:
+            self._apply_output(cap)
+
+    @safe_slot
+    def _on_output_ready(self, info) -> None:
+        # 引擎实际生效的通道可能不等于菜单里点的那条（独占失败回退）→ 以 info 为准
+        if info is None or info.channel is None:
+            return
+        for key, act in self._output_actions.items():
+            act.setChecked(key == info.channel.key)
+        self._render_output_text()
+
+    def _current_output_channel(self) -> OutputChannel | None:
+        info = self._playback.info
+        if info is not None and info.channel is not None:
+            return info.channel
+        return self._playback.channel
+
+    def _apply_output(self, cap) -> None:
+        if cap is None or cap.channel is None:
+            return
+        if cap.probed:
+            self._playback.select_output(cap.channel)
+        else:
+            self._playback.use_channel(cap.channel)
+        ch = cap.channel
+        for key, act in self._output_actions.items():
+            act.setChecked(key == ch.key)
+            if key == ch.key and not cap.ok:
+                act.setText(f"{ch.device_name}（{self._tr('不可用')}）")
+        if self._output_btn is not None:
+            self._output_btn.setText(ch.status_text(full=False, tr=self._tr))
+            self._output_btn.setToolTip(ch.status_text(full=True, tr=self._tr))
+        self._render_output_text()
+
+    def _render_output_text(self) -> None:
+        if self._output_label is None:
+            return
+        ch = self._current_output_channel()
+        if ch is None:
+            self._output_label.setText("")
+            return
+        fm = self._output_label.fontMetrics()
+        full = ch.status_text(full=True, tr=self._tr)
+        info = self._playback.info
+        if info is not None and info.fallback_from is not None:
+            full += f" · {self._tr('回退')}"
+        narrow = ch.status_text(full=False, tr=self._tr)
+        # 宽度不够就缩到只剩协议；独占的「独占」标记保留 —— 它意味着静音其他应用
+        spare = fm.horizontalAdvance(self._status_label.text()) + 2 * SIDE + 16
+        budget_px = max(80, self.width() - spare)
+        text = full if fm.horizontalAdvance(full) <= budget_px else narrow
+        char_w = max(fm.horizontalAdvance("m"), 1)
+        self._output_label.setText(elide(text, max(1, int(budget_px / char_w))))
 
     def _on_palette_changed(self, name: str) -> None:
         self._current_palette = name
@@ -1459,7 +1627,18 @@ class MainWindow(QMainWindow):
               "Drop an audio file here, or press Ctrl+O"))
         if not self._current_path:
             self._status_label.setText(t("就绪", "Ready"))
+        self._rebuild_output_menu(self._output_entries, self._current_output_channel())
+        ch = self._current_output_channel()
+        if self._output_btn is not None and ch is not None:
+            self._output_btn.setText(ch.status_text(full=False, tr=self._tr))
+            self._output_btn.setToolTip(ch.status_text(full=True, tr=self._tr))
+        self._render_output_text()
         self.setWindowTitle("Spectra")
+
+    def resizeEvent(self, event) -> None:
+        """宽度变了就重算状态栏的输出通道文案（装不下就缩到只剩协议）。"""
+        super().resizeEvent(event)
+        self._render_output_text()
 
     def _on_minimize(self) -> None:
         self.showMinimized()
