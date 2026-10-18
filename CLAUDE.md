@@ -194,7 +194,7 @@ fragColor = mix(cA, cB, u_lut_mix);   // LUT 交叉淡化
 
 ### 2.7 音频播放 — `src/spectra/frontend/playback_engine.py`
 
-- 基于 `sounddevice.OutputStream`，输出通道可选：**系统（默认设备）/ WASAPI 共享 / WASAPI 独占**；只列有输出能力的设备，不列 MME / DirectSound / WDM-KS
+- 基于 `sounddevice.OutputStream`，输出通道可选：**系统（默认设备）/ WASAPI 共享 / WASAPI 独占**；只列有输出能力的设备，不列 MME / DirectSound / WDM-KS（「系统」那条本身就是默认设备，这台机器上属 **MME**（index 3）——所以 `WasapiSettings` 对它必报 `-9984`；各 host API 各自的默认设备不同：WASAPI 18、WDM-KS 28）
 - 数据源是 `analyzer.data`（真立体声，不再是 mixdown）；单声道复制成设备声道数（`convert.prepare_channels`）
 - 回调帧计数器追踪位置（无 DAC time 抖动）；播放/暂停/停止/Seek + 拖拽跟踪 (`track_position`)
 - **构造时不开流**：独占能力只能真开一次流才知道（PortAudio 不报能力），所以 `__init__` 不探测；UI 启动时经 `_ProbeWorker`（后台线程）探测一次，结果按通道缓存（`capability()` / `cached_capability()`）——独占会静音其他应用，不能卡在 UI 线程
@@ -242,7 +242,7 @@ MainWindow (QMainWindow)
 │   ├── logo (24px SVG) + brand_label "Spectra"
 │   ├── open_btn
 │   ├── play_label + play_btn (SVG icon toggle)
-│   ├── output_btn (QToolButton + QMenu, 输出通道展开列表, 文本型)
+│   ├── output_btn (QToolButton + QMenu, 输出通道展开列表, 文本型, 固定 220×32)
 │   ├── palette_label + palette_combo
 │   ├── mode_label + mode_combo
 │   ├── fft_label + fft_combo
@@ -292,11 +292,13 @@ MainWindow (QMainWindow)
 
 **输出通道选择（play_btn 右侧）**
 
-- `QToolButton(InstantPopup)` + `QMenu`，按模式分组 `addSection()`（系统 / 共享 / 独占）；action 按 `channel.key` 存在 `_output_actions`，可勾选
-- 探过且 `ok=False` 的条目置灰 + 标「不可用」；当前生效通道以 `playback.info` 为准（≠ 用户点的那条时也要反映，因为回退）
+- `QToolButton(InstantPopup)` + `QMenu`；按钮**固定尺寸** `_OUTPUT_BTN_W × BTN_H`（220×32）——文案变短也不能缩，宽度跳会顶开后面的控件
+- **菜单按协议分组** `addSection()`（系统声音（默认输出设备） / WASAPI（共享 / 独占）），行里只写**模式 — 设备名**（协议在表头上，不重复），系统行附注它实际走的 host API；action 按 `channel.key` 存在 `_output_actions`
+- `QMenu` 不在全局样式表里 → 悬停高亮靠 `_output_menu_qss()` 自带（`QMenu::item:selected` 用 `BG_RAISED`）；按钮 hover/pressed 有底色反馈（`_output_btn_qss()`），只改描边太弱
+- 当前行用文本前缀 `✓ ` 表示（stylesheet 下 `QMenu::indicator` 不画勾）；探过且 `ok=False` 的条目置灰 + 标「不可用」；当前生效通道以 `playback.info` 为准（≠ 用户点的那条时也要反映，因为回退）
 - 状态栏用 `addPermanentWidget(_output_label)`，和文件信息（`_status_label`）分开；文案只写**协议 + 设备名**，装不下则缩到只剩协议（用 `QFontMetrics` 算宽 + `output_devices.elide`），`resizeEvent` 里重算
 - 缩窄时「独占」标记必须留住 —— 它意味着静音其他应用，信息不能丢
-- 术语翻译：后端 `status_text` 只认中文键，UI 用 `_tr(zh)` 接 `lang.t()`（`_OUTPUT_TR_EN`）
+- 术语翻译：后端 `status_text` / `menu_label` 只认中文键，UI 用 `_tr(zh)` 接 `lang.t()`（`_OUTPUT_TR_EN`）
 - `_ProbeWorker(QThread)`：启动自动探测一次（测试里可换成同步替身）；测试不 `show()` 窗口，避开 offscreen 平台的 GL paint 抖动
 
 ---
