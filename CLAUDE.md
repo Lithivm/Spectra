@@ -47,7 +47,7 @@ src/spectra/{__main__.py, lang.py, backend/, frontend/, assets/}
 
 ### 2.1 模块拆分
 
-`src/spectra/backend/core.py` 是门面，下面六个模块（其中 `scales.py` 只是刻度换算）：
+`src/spectra/backend/core.py` 是门面，下面八个模块（其中 `scales.py` 只是刻度换算，`convert.py` / `output_devices.py` 是播放侧的数据层）：
 
 | 模块                       | 职责                                                                                                  |
 | -------------------------- | ------------------------------------------------------------------------------------- |
@@ -56,6 +56,8 @@ src/spectra/{__main__.py, lang.py, backend/, frontend/, assets/}
 | `src/spectra/backend/quality.py`   | `_QualityMixin` — 削波、过采样检测、TT DR、LUFS、true peak                                |
 | `src/spectra/backend/loudness.py`  | EBU R128 原生采样率实现（K 权重 + 分块流式 + polyphase FIR 真峰值），被 quality 调用            |
 | `src/spectra/backend/scales.py`    | Slaney mel 刻度（Hz↔mel 分段），CPU 侧唯一实现；shader 的 mel 分支是它的镜像                    |
+| `src/spectra/backend/convert.py`   | 播放前声道/格式准备：`prepare_channels`（mono 复制到设备声道数，不靠系统 upmix）、`quantize`（dtype 转换，int32 先限幅） |
+| `src/spectra/backend/output_devices.py` | 输出通道数据层：纯数据、不 import sounddevice、不开设备 → 可脱机单测。`OutputChannel` / `ChannelCapability` / `StreamInfo` / `enumerate_channels` / `resolve_channel` / `parse_key` / `elide` |
 | `src/spectra/backend/core.py`       | `AudioAnalyzer` 门面类，继承两个 mixin，保留 load/waveform/info                            |
 
 外部一律走门面：`from spectra.backend.core import AudioAnalyzer`（UI 和测试都只认这个）。
@@ -192,10 +194,19 @@ fragColor = mix(cA, cB, u_lut_mix);   // LUT 交叉淡化
 
 ### 2.7 音频播放 — `src/spectra/frontend/playback_engine.py`
 
-- 基于 `sounddevice.OutputStream`，WASAPI 共享模式（低延迟 ~10ms）
-- 回调帧计数器追踪位置（无 DAC time 抖动）
-- 播放/暂停/停止/Seek + 拖拽跟踪 (`track_position`)
-- 启动时探测 WASAPI 设备默认采样率，`load()` 时自动重采样（soxr 优先，scipy 回退）
+- 基于 `sounddevice.OutputStream`，输出通道可选：**系统（默认设备）/ WASAPI 共享 / WASAPI 独占**；只列有输出能力的设备，不列 MME / DirectSound / WDM-KS
+- 数据源是 `analyzer.data`（真立体声，不再是 mixdown）；单声道复制成设备声道数（`convert.prepare_channels`）
+- 回调帧计数器追踪位置（无 DAC time 抖动）；播放/暂停/停止/Seek + 拖拽跟踪 (`track_position`)
+- **构造时不开流**：独占能力只能真开一次流才知道（PortAudio 不报能力），所以 `__init__` 不探测；UI 启动时经 `_ProbeWorker`（后台线程）探测一次，结果按通道缓存（`capability()` / `cached_capability()`）——独占会静音其他应用，不能卡在 UI 线程
+- dtype 优先级：独占 `float32 → int32 → int16`（float32 零量化），共享只 `float32`
+- 采样率：独占按文件原生率直接请求（成功 = 直通）；共享必须用设备 mix format 率（必然 SRC）
+- **回退不静默**：独占失败自动回退共享，`StreamInfo.fallback_from` 记下原始请求，状态栏显示「回退」
+- `passthrough` 定义 = `actual_sr == source_sr`（不是 == 请求率），共享路径不会被误报成直通
+- 换通道保住播放位置（位置存秒，按新采样率折帧）；`_resample()` 失败抛 RuntimeError，不再静默不重采样
+- int32 先限幅再转：float64 × 2³¹ + `np.rint` + `np.clip`（不限幅则 `1.0 × 2³¹` 绕回 `-2147483648`）；24-bit 源 → int32 精确（`v·256`）
+- 持久化存 `host_api|device_name|mode`（不是 index，索引机器相关、拔插会重排），找不到则回退系统默认
+- `output_ready` 信号把**实际生效**的通道回报给 UI（可能 ≠ 用户点的那条，因为回退）；`available_channels()`（不叫 `channels`，那个名字被 `self.channels` 实例属性占了）
+- 重采样：soxr 优先，scipy 回退
 
 ### 2.8 播放进度条 — `_PlaybackSlider`（`src/spectra/frontend/main_window.py`）
 
@@ -231,6 +242,7 @@ MainWindow (QMainWindow)
 │   ├── logo (24px SVG) + brand_label "Spectra"
 │   ├── open_btn
 │   ├── play_label + play_btn (SVG icon toggle)
+│   ├── output_btn (QToolButton + QMenu, 输出通道展开列表, 文本型)
 │   ├── palette_label + palette_combo
 │   ├── mode_label + mode_combo
 │   ├── fft_label + fft_combo
@@ -253,7 +265,7 @@ MainWindow (QMainWindow)
 │   │           └── XAxisWidget (row 3, col 0-2, height=36)
 │   └── right
 │       └── MetadataPanel (width=310)
-└── status_bar (zoom hint left-aligned)
+└── status_bar (zoom hint left-aligned + `_output_label` 专用栏位：协议 · 模式 · 设备名)
 ```
 
 ### 关键 UI 设计模式
@@ -278,6 +290,15 @@ MainWindow (QMainWindow)
 - 存储 `_section_labels`、`_info_rows`、`_tag_rows`、`_analysis_rows` widget 引用列表
 - `_retranslate_with_data` 直接遍历引用列表，无需遍历布局树
 
+**输出通道选择（play_btn 右侧）**
+
+- `QToolButton(InstantPopup)` + `QMenu`，按模式分组 `addSection()`（系统 / 共享 / 独占）；action 按 `channel.key` 存在 `_output_actions`，可勾选
+- 探过且 `ok=False` 的条目置灰 + 标「不可用」；当前生效通道以 `playback.info` 为准（≠ 用户点的那条时也要反映，因为回退）
+- 状态栏用 `addPermanentWidget(_output_label)`，和文件信息（`_status_label`）分开；文案只写**协议 + 设备名**，装不下则缩到只剩协议（用 `QFontMetrics` 算宽 + `output_devices.elide`），`resizeEvent` 里重算
+- 缩窄时「独占」标记必须留住 —— 它意味着静音其他应用，信息不能丢
+- 术语翻译：后端 `status_text` 只认中文键，UI 用 `_tr(zh)` 接 `lang.t()`（`_OUTPUT_TR_EN`）
+- `_ProbeWorker(QThread)`：启动自动探测一次（测试里可换成同步替身）；测试不 `show()` 窗口，避开 offscreen 平台的 GL paint 抖动
+
 ---
 
 ## 4. 批量分析
@@ -298,11 +319,14 @@ spectra.frontend.main_window
   ├── spectra.backend.batch (flatten_analysis, export_batch_csv)
   ├── spectra.backend.palette (PALETTE, build_lut_np, is_spectra, get_curve_params)
   ├── spectra.backend.scales (Slaney mel：hz_to_mel / mel_to_hz / mel_frac)
+  ├── spectra.backend.output_devices (OutputChannel, ChannelCapability, MODE_TR, elide, parse_key, resolve_channel)
   ├── spectra.lang (t, toggle_lang, on_lang_change)
   ├── spectra.frontend.spectrogram_widget (SpectrogramGLWidget, 轴/色条)
   ├── spectra.frontend.waveform_widget (WaveformWidget)
   ├── spectra.frontend.metadata_panel (MetadataPanel)
   ├── spectra.frontend.playback_engine (PlaybackEngine)
+  │     ├── spectra.backend.output_devices (enumerate_channels, resolve_channel, parse_key)
+  │     └── spectra.backend.convert (prepare_channels, quantize)
   ├── spectra.frontend.progress_bar (加载浮层)
   ├── spectra.frontend.anim (FloatAnim — 动画助手)
   ├── spectra.frontend.icons (render_icon — SVG 图标)
@@ -367,7 +391,8 @@ spectra.backend.core
 
 ---
 
-> 最后更新: 2026-10-17 (mel 口径统一为 Slaney：新增 `src/spectra/backend/scales.py` 作 CPU 侧唯一实现，刻线/cursor 不再走 librosa，shader mel 分支改成分段镜像，`tests/test_scales.py` 钉常量)
+> 最后更新: 2026-10-18 (播放侧两件事：① 真立体声（传 `analyzer.data`，mono 复制到设备声道数）② WASAPI 输出通道选择 —— `src/spectra/backend/output_devices.py` 数据层 + `convert.quantize`（int32 先限幅）+ 引擎按通道流/直通/回退 + UI 展开列表和状态栏专用栏位 + QSettings 按名字持久化 + 启动后台探测一次（不在 `__init__` 开流）；版本 1.5.0)
+> 上一更新: 2026-10-17 (mel 口径统一为 Slaney：新增 `src/spectra/backend/scales.py` 作 CPU 侧唯一实现，刻线/cursor 不再走 librosa，shader mel 分支改成分段镜像，`tests/test_scales.py` 钉常量)
 > 上一更新: 2026-10-17 (CLAUDE.md 事实校正：模块表补 `loudness.py`、外部导入前缀改 `spectra.backend.core`、STFT 缓存写成 `_MAX_STFT_CACHE=8` 手动 LRU、§5 依赖图按新布局重写（补 lang/anim/icons/progress_bar/loudness）、§6 入口与 datas、§7 延迟加载对齐（quality 不再出现 librosa/pyloudnorm）、mel 口径 Slaney/HTK 不统一已量化并列入 TODO 7)
 > 上一更新: 2026-10-17 (目录重构：`src/spectra/{backend(原 analyzer), frontend(原 ui), lang.py, __main__.py, assets/}` + import 前缀 `spectra.` + PyInstaller datas / CI PYTHONPATH / pyproject packages 跟着改；根目录清理：run_check.py 删、乱命名 PNG 残留删、`_remote_ref/` 忽略、`!spectra.spec` 反忽略、`assets/*.png` 不再被 `*.png` 误排（之前干净 clone 没有品牌 logo）)
 > 上一更新: 2026-10-17 (代码审查修正落地：R128 原生采样率 loudness.py、TT DR 与 LRA 分开、位深感知削波 2LSB、真 dBFS 基准、Auger-Flandrin 重分配、multi 统一行网格、流式 carry 取组内 max、缓存键统一 `cached_result`、UI P0 崩溃路径 + 信号遮蔽 + 测试挂死（模态对话框）)

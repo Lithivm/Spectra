@@ -7,7 +7,7 @@
 ## 1. 现状（实测过，不是猜测）
 
 - **播放实际是单声道混缩**：`src/spectra/frontend/main_window.py:1154` 传的是 `analyzer.waveform`（= `src/spectra/backend/core.py:98` 的 `np.mean(data, axis=0)`）。所以立体声文件的声像与左右差异全丢，不相关信号求和 ≈ −3 dB，反相内容相消。测试覆盖不到（`tests/test_main_window.py` 里用的是 `analyzer.data`）。
-- **独占现在不可能开**：`_probe_wasapi()` 取的是默认输出设备（本机 index 3 = **MME** host API），`WasapiSettings` 对它一律报 `PaErrorCode -9984`。
+- **独占现在不可能开**：`_probe_wasapi()` 取的是默认输出设备（本机 index 3），`WasapiSettings` 对它一律报 `PaErrorCode -9984`。（2026-10-18 更正：index 3 属于 **Windows WDM-KS**，不是 MME。）
 - 同一块 DAC 在 **Windows WASAPI** host API 下是 index 18（WASAPI mix format = 88200）。实测（本机 YULONG Audio DSD DAC）：
 
   | 路径 | 结果 |
@@ -81,3 +81,22 @@ WASAPI（独占） — Realtek Digital Output
 4. `docs: CLAUDE.md §2.7 播放段按新实现改写`
 
 CI 跑 `python -m pytest tests/`（`pythonpath=["src"]`）+ ruff（`--select=E,F,W --ignore=E501,E402,F405,F403`）。
+
+---
+
+## 5. 完成记录（2026-10-18，版本 1.5.0）
+
+做完了，分 6 个 commit：版本对齐 → 真立体声 → 枚举层 → int32 限幅/直通/回退 → UI → docs（本段）。
+
+**与原规划的出入**（决定变更，不是漏做）：
+
+- 状态栏只写 **协议 + 设备名**（+ 回退时追加「回退」），不写采样率和格式；窗口窄就缩到只剩协议，但独占的「独占」必须留住。`StreamInfo` 里仍然带 `actual_sr`/`dtype`，只是 UI 不显示。
+- 播放按钮右边是**文本型** `QToolButton`（不是 `render_icon`）——文案是动态的，图标不合适。
+- 探测不在引擎 `__init__` 做（原 `_probe_wasapi()` 在构造时开流，会白占设备）：UI 启动后经 `_ProbeWorker` 在后台线程探测一次，结果按通道缓存。独占会静音其他应用，不能放 UI 线程。
+- 持久化：存 `host_api|device_name|mode`（`QSettings`，键 `output_channel`），不存 index；找不到 → 回退系统默认。
+- WDM-KS 照原计划不做，但本机默认输出设备（index 3）本身就是 WDM-KS 设备，所以「系统」那条在这台机器上实际走的是 WDM-KS。这条只作事实记录，不改行为。
+- CI 文件是 `.github/workflows/ci.yml`（不是 main.yml），ruff 参数不变。
+
+**测试**：`tests/test_output_devices.py`（18，脱机可跑，不碰真设备）、`tests/test_playback.py`（24，mock sounddevice）、`tests/test_main_window.py`（40，新增 `TestOutputSelection` 10 条）。全量 146 passed。输出通道的 UI 测试**不 show 窗口**（offscreen 平台上 GL paint 有抖动，`paintGL` 报 GLError 会污染别的用例）。
+
+**本机实测枚举结果**（`enumerate_channels`）：只出「系统 + WASAPI 共享 + WASAPI 独占」，MME/DirectSound 无条目 ✓。系统条 = 默认输出设备 YULONG DAC（WDM-KS），其余各设备共享/独占成对列出。
