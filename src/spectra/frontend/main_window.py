@@ -15,7 +15,7 @@ from typing import Any
 from PyQt6.QtCore import QThread, QSettings, Qt, pyqtSignal, QTimer, QRectF, QPointF, QSize
 from PyQt6.QtGui import (
     QDragEnterEvent, QDropEvent, QColor, QPainter, QPixmap,
-    QKeySequence, QShortcut, QGuiApplication,
+    QKeySequence, QShortcut, QGuiApplication, QFont,
 )
 
 from spectra.frontend.anim import FloatAnim
@@ -915,6 +915,10 @@ class MainWindow(QMainWindow):
         self._output_menu.setStyleSheet(_output_menu_qss())
         self._output_menu.setMinimumWidth(self._OUTPUT_MENU_W)
         self._output_btn = QToolButton()
+        # 样式表里的 font-size 不进 fontMetrics，所以字体显式设上，缩字估算才和画出来的一致
+        _btn_font = QFont(self._output_btn.font())
+        _btn_font.setPixelSize(FS_MD)
+        self._output_btn.setFont(_btn_font)
         self._output_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._output_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self._output_btn.setFixedSize(self._OUTPUT_BTN_W, BTN_H)
@@ -1074,6 +1078,10 @@ class MainWindow(QMainWindow):
         sb.addWidget(self._zoom_hint)
         # 输出通道：专用栏位，和文件信息（_status_label）分开
         self._output_label = QLabel("")
+        _label_font = QFont(self._output_label.font())
+        _label_font.setFamily("Consolas")
+        _label_font.setPixelSize(FS_SM)
+        self._output_label.setFont(_label_font)
         self._output_label.setStyleSheet(
             f"color: {TEXT_DIM}; font-size: {FS_SM}px; font-family: 'Consolas'; background: transparent;")
         sb.addPermanentWidget(self._output_label)
@@ -1194,8 +1202,17 @@ class MainWindow(QMainWindow):
             act.setText(self._row_text(row, checked=checked, unavailable=unavailable))
         self._render_output_text()
 
-    def _fit_chars(self, fm, px: int) -> int:
-        return max(6, int(px / max(1, int(fm.averageCharWidth()))))
+    def _fit_text(self, fm, text: str, px: int) -> str:
+        """按像素宽度缩（elide），装不下就缩字段本身，不会掉协议。"""
+        if fm.horizontalAdvance(text) <= px:
+            return text
+        chars = max(6, int(px / max(1, int(fm.averageCharWidth()))))
+        while chars > 6:
+            t = elide(text, chars)
+            if fm.horizontalAdvance(t) <= px:
+                return t
+            chars -= 1
+        return elide(text, 6)
 
     def _render_output_text(self) -> None:
         ch = self._current_output_channel()
@@ -1208,14 +1225,12 @@ class MainWindow(QMainWindow):
         info = self._playback.info
         suffix = f" · {self._tr('回退')}" if (info is not None and info.fallback_from is not None) else ""
 
-        # 按钮尺寸固定 → 装得下全名就显示全名，装不下退到协议 + 模式
+        # 按钮尺寸固定 → 协议 + 全名，装不下就缩名字本身（tooltip 给全名）
         if self._output_btn is not None:
             fm = self._output_btn.fontMetrics()
-            usable = self._OUTPUT_BTN_W - 24          # 内边距 + 下拉箭头
-            full = ch.status_text(full=True, tr=self._tr, name=elide(ch.device_name, self._fit_chars(fm, usable)))
-            text = full + suffix if fm.horizontalAdvance(full + suffix) <= usable else ch.status_text(full=False, tr=self._tr)
-            self._output_btn.setText(text)
-            self._output_btn.setToolTip(ch.status_text(full=True, tr=self._tr) + suffix)
+            full = ch.status_text(full=True, tr=self._tr) + suffix
+            self._output_btn.setText(self._fit_text(fm, full, self._OUTPUT_BTN_W - 24))
+            self._output_btn.setToolTip(full)
 
         if self._output_label is None:
             return

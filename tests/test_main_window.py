@@ -533,6 +533,20 @@ class TestOutputSelection:
         assert fm.horizontalAdvance(mw._output_btn.text()) <= usable
         assert target.device_name in mw._output_btn.text()   # 装得下 → 显示全名
 
+    def test_long_device_name_elided_not_dropped(self, app, monkeypatch):
+        """按钮够大就直接显示协议 + 全名；装不下只缩名字本身，不整段退回短形态。"""
+        from spectra.backend.output_devices import OutputChannel
+        long = OutputChannel(host_api="Windows WASAPI",
+                             device_name="Realtek Digital Output (Realtek USB Audio)",
+                             mode="exclusive", device_index=5, mix_sr=48000, max_channels=2)
+        eng = FakeEngine(entries=[long])
+        mw, eng = self._window(app, monkeypatch, FakeSettings({"output_channel": long.key}), eng)
+        text = mw._output_btn.text()
+        assert text.startswith("WASAPI · 独占 · ") and "…" in text
+        assert mw._output_btn.fontMetrics().horizontalAdvance(text) <= mw._OUTPUT_BTN_W - 24
+        assert "Realtek Digital" in text                       # 缩了但字段还在
+        assert mw._output_btn.toolTip().endswith("(Realtek USB Audio)")   # 全名在 tooltip
+
     def test_menu_has_hover_highlight_and_fixed_width(self, app, monkeypatch):
         """全局样式表里没有 QMenu → 悬停高亮得自带。"""
         mw, eng = self._window(app, monkeypatch)
