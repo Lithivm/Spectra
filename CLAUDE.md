@@ -293,9 +293,12 @@ MainWindow (QMainWindow)
 **输出通道选择（play_btn 右侧）**
 
 - `QToolButton(InstantPopup)` + `QMenu`；按钮**固定尺寸** `_OUTPUT_BTN_W × BTN_H`（220×32）——文案变短也不能缩，宽度跳会顶开后面的控件
-- **菜单按协议分组** `addSection()`（系统声音（默认输出设备） / WASAPI（共享 / 独占）），行里只写**模式 — 设备名**（协议在表头上，不重复），系统行附注它实际走的 host API；action 按 `channel.key` 存在 `_output_actions`
+- **菜单按协议分组** `addSection()`（系统声音（默认输出设备） / WASAPI（共享 / 独占）），行里写 `协议 模式 — 设备名`（协议也在行里，扫一眼就能看出系统 vs WASAPI），系统行附注它实际走的 host API；action 按 `channel.key` 存在 `_output_actions`
+- **按钮只写模式 + 设备名**（`模式 · 设备名`）——协议在表头和状态栏里已经有，按钮宽度有限；模式放最前所以缩字只吃设备名，「独占」标记不会被缩掉；tooltip 给协议 + 全名；回退时写成 `共享（回退）`
+- 行宽/按钮文案按像素缩（`MainWindow._fit_text` 用 `QFontMetrics.horizontalAdvance` 逐字符试），菜单行预算 = `_OUTPUT_MENU_W - _OUTPUT_MENU_PAD`（340 − 36）
+- 样式表里的 `font-size` 不进 `fontMetrics()` → 按钮 / 菜单 / 状态栏的字体显式 `QFont.setPixelSize`，否则缩字估算和实际渲染不一致
 - `QMenu` 不在全局样式表里 → 悬停高亮靠 `_output_menu_qss()` 自带（`QMenu::item:selected` 用 `BG_RAISED`）；按钮 hover/pressed 有底色反馈（`_output_btn_qss()`），只改描边太弱
-- 当前行用文本前缀 `✓ ` 表示（stylesheet 下 `QMenu::indicator` 不画勾）；探过且 `ok=False` 的条目置灰 + 标「不可用」；当前生效通道以 `playback.info` 为准（≠ 用户点的那条时也要反映，因为回退）
+- 当前行用文本前缀 `✓ ` 表示（stylesheet 下 `QMenu::indicator` 不画勾）；探过且 `ok=False` 的条目置灰 + 行头部标 `(不可用)`；当前生效通道以 `playback.info` 为准（≠ 用户点的那条时也要反映，因为回退）
 - 状态栏用 `addPermanentWidget(_output_label)`，和文件信息（`_status_label`）分开；文案只写**协议 + 设备名**，装不下则缩到只剩协议（用 `QFontMetrics` 算宽 + `output_devices.elide`），`resizeEvent` 里重算
 - 缩窄时「独占」标记必须留住 —— 它意味着静音其他应用，信息不能丢
 - 术语翻译：后端 `status_text` / `menu_label` 只认中文键，UI 用 `_tr(zh)` 接 `lang.t()`（`_OUTPUT_TR_EN`）

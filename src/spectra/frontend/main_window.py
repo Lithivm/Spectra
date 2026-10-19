@@ -914,6 +914,9 @@ class MainWindow(QMainWindow):
         self._output_menu = QMenu(self)
         self._output_menu.setStyleSheet(_output_menu_qss())
         self._output_menu.setMinimumWidth(self._OUTPUT_MENU_W)
+        _menu_font = QFont(self._output_menu.font())
+        _menu_font.setPixelSize(FS_MD)
+        self._output_menu.setFont(_menu_font)
         self._output_btn = QToolButton()
         # 样式表里的 font-size 不进 fontMetrics，所以字体显式设上，缩字估算才和画出来的一致
         _btn_font = QFont(self._output_btn.font())
@@ -1101,7 +1104,7 @@ class MainWindow(QMainWindow):
                      "WASAPI（共享 / 独占）": "WASAPI (shared / exclusive)"}
     _OUTPUT_BTN_W = 220       # 固定尺寸：文案变短也不能缩
     _OUTPUT_MENU_W = 340      # 展开列表固定宽度
-    _OUTPUT_ROW_CHARS = 34    # 菜单行里设备名上限（按字符数近似）
+    _OUTPUT_MENU_PAD = 36     # QMenu padding 4*2 + item 内边距 10+18 —— 行宽预算
 
     def _tr(self, zh: str) -> str:
         return t(zh, self._OUTPUT_TR_EN.get(zh, zh))
@@ -1151,12 +1154,20 @@ class MainWindow(QMainWindow):
                 self._output_actions[e.key] = act
 
     def _row_text(self, ch: OutputChannel, *, checked: bool, unavailable: bool) -> str:
-        """菜单行：模式 — 设备名（协议在表头上）；系统行附注它实际走的 host API。"""
-        note = ch.host_api if ch.mode == "system" else None
-        text = ch.menu_label(tr=self._tr, note=note, name=elide(ch.device_name, self._OUTPUT_ROW_CHARS))
+        """菜单行：协议 + 模式 + 设备名（协议写进行里，扫一眼就能看出系统 vs WASAPI）。
+
+        系统行附注它实际走的 host API；缩字只吃设备名 —— 协议和「不可用」在行头部。
+        """
+        notes = []
+        if ch.mode == "system":
+            notes.append(ch.host_api)
         if unavailable:
-            text += f"（{self._tr('不可用')}）"
-        return ("✓ " if checked else "") + text
+            notes.append(self._tr("不可用"))
+        text = ch.menu_label(tr=self._tr, note=" ".join(notes) or None)
+        fm = self._output_menu.fontMetrics()
+        # 勾算进宽度预算 —— 不然加 "✓ " 后就超菜单宽
+        text = self._fit_text(fm, ("✓ " if checked else "") + text, self._OUTPUT_MENU_W - self._OUTPUT_MENU_PAD)
+        return text
 
     @safe_slot
     def _choose_output(self, channel: OutputChannel) -> None:
@@ -1225,12 +1236,13 @@ class MainWindow(QMainWindow):
         info = self._playback.info
         suffix = f" · {self._tr('回退')}" if (info is not None and info.fallback_from is not None) else ""
 
-        # 按钮尺寸固定 → 协议 + 全名，装不下就缩名字本身（tooltip 给全名）
+        # 按钮：模式 + 全名（协议在菜单表头 / 状态栏里），缩字只吃名字；tooltip 给协议 + 全名
         if self._output_btn is not None:
             fm = self._output_btn.fontMetrics()
-            full = ch.status_text(full=True, tr=self._tr) + suffix
-            self._output_btn.setText(self._fit_text(fm, full, self._OUTPUT_BTN_W - 24))
-            self._output_btn.setToolTip(full)
+            label = ch.button_label(tr=self._tr,
+                                    fallback=info is not None and info.fallback_from is not None)
+            self._output_btn.setText(self._fit_text(fm, label, self._OUTPUT_BTN_W - 24))
+            self._output_btn.setToolTip(ch.status_text(full=True, tr=self._tr) + suffix)
 
         if self._output_label is None:
             return

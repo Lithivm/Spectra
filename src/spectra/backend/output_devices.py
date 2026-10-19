@@ -67,18 +67,29 @@ class OutputChannel:
             parts.append(name or self.device_name)
         return " · ".join(parts)
 
+    def button_label(self, tr: Callable[[str], str] | None = None,
+                     *, fallback: bool = False, name: str | None = None) -> str:
+        """工具栏按钮：模式 + 设备名。协议不在按钮里（菜单表头和状态栏都有），
+        模式放在最前 —— 缩字只会吃尾巴，「独占」标记不会被缩掉。"""
+        tr = tr or (lambda s: s)
+        mode = tr(MODE_TR[self.mode])
+        if fallback:
+            mode += f"（{tr('回退')}）"
+        return f"{mode} · {name or self.device_name}"
+
     def menu_label(self, tr: Callable[[str], str] | None = None, note: str | None = None,
                     name: str | None = None) -> str:
-        """展开列表里的一行：模式 + 设备名（协议在分组表头上，这里不重复）。
+        """展开列表里的一行：协议 + 模式 + 设备名。
 
-        ``note`` 是 UI 追加的附注（系统行补实际走的 host API / 不可用 / 回退），
-        ``name`` 是宽度不够时缩过的设备名。
+        协议写进行里（不只是表头）——扫一眼就能看出这条是系统还是 WASAPI。
+        ``note`` 是 UI 追加的附注（系统行补实际走的 host API / 不可用），放进表头部分，
+        缩字只吃设备名；``name`` 是宽度不够时缩过的设备名。
         """
         tr = tr or (lambda s: s)
-        base = f"{tr(MODE_TR[self.mode])} — {name or self.device_name}"
+        head = tr(MODE_TR["system"]) if self.mode == "system" else f"{tr('WASAPI')} {tr(MODE_TR[self.mode])}"
         if note:
-            base += f" · {note}"
-        return base
+            head += f" ({note})"
+        return f"{head} — {name or self.device_name}"
 
 
 def enumerate_channels(devices: Iterable[Mapping],

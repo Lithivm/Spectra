@@ -532,9 +532,10 @@ class TestOutputSelection:
         assert mw._output_btn.text()
         assert fm.horizontalAdvance(mw._output_btn.text()) <= usable
         assert target.device_name in mw._output_btn.text()   # 装得下 → 显示全名
+        assert "WASAPI" not in mw._output_btn.text()         # 协议不在按钮里（表头/状态栏有）
 
     def test_long_device_name_elided_not_dropped(self, app, monkeypatch):
-        """按钮够大就直接显示协议 + 全名；装不下只缩名字本身，不整段退回短形态。"""
+        """按钮够大就直接显示模式 + 全名；装不下只缩名字本身，不整段退回短形态。"""
         from spectra.backend.output_devices import OutputChannel
         long = OutputChannel(host_api="Windows WASAPI",
                              device_name="Realtek Digital Output (Realtek USB Audio)",
@@ -542,7 +543,7 @@ class TestOutputSelection:
         eng = FakeEngine(entries=[long])
         mw, eng = self._window(app, monkeypatch, FakeSettings({"output_channel": long.key}), eng)
         text = mw._output_btn.text()
-        assert text.startswith("WASAPI · 独占 · ") and "…" in text
+        assert text.startswith("独占 · ") and "…" in text
         assert mw._output_btn.fontMetrics().horizontalAdvance(text) <= mw._OUTPUT_BTN_W - 24
         assert "Realtek Digital" in text                       # 缩了但字段还在
         assert mw._output_btn.toolTip().endswith("(Realtek USB Audio)")   # 全名在 tooltip
@@ -554,22 +555,37 @@ class TestOutputSelection:
         assert mw._output_menu.minimumWidth() == mw._OUTPUT_MENU_W
 
     def test_menu_groups_by_protocol(self, app, monkeypatch):
-        """表头体现协议（系统声音 vs WASAPI），行里只写模式 + 设备名。"""
+        """表头按协议分组，行里也写协议 —— 扫一眼就能看出系统 vs WASAPI。"""
         mw, eng = self._window(app, monkeypatch)
         headers = [a.text() for a in mw._output_menu.actions() if a.isSeparator()]
         assert headers == ["系统声音（默认输出设备）", "WASAPI（共享 / 独占）"]
         rows = {a.data().key: a.text() for a in mw._output_menu.actions() if not a.isSeparator()}
         sys_e, exc_e, sh_e = by_mode("system"), by_mode("exclusive"), by_mode("shared")
-        # 系统行附注它实际走的 host API（这台机器默认设备可能是 WDM-KS）
-        assert rows[sys_e.key] == f"✓ 系统 — {sys_e.device_name} · MME"   # 默认选中 = 系统条
-        assert rows[exc_e.key] == "独占 — DAC B"
-        assert rows[sh_e.key] == "共享 — DAC B"
+        # 系统行附注它实际走的 host API；行里写协议 + 模式 + 设备名
+        assert rows[sys_e.key] == f"✓ 系统 ({sys_e.host_api}) — {sys_e.device_name}"   # 默认选中 = 系统条
+        assert rows[exc_e.key] == "WASAPI 独占 — DAC B"
+        assert rows[sh_e.key] == "WASAPI 共享 — DAC B"
+
+    def test_menu_rows_fit_the_menu_width(self, app, monkeypatch):
+        """缩字只吃设备名，行宽不会超过菜单宽度（菜单不会被长设备名撑爆）。"""
+        from spectra.backend.output_devices import OutputChannel
+        long = OutputChannel(host_api="Windows WASAPI",
+                             device_name="Realtek Digital Output (Realtek USB Audio) Rev 3",
+                             mode="exclusive", device_index=5, mix_sr=48000, max_channels=2)
+        eng = FakeEngine(entries=[long])
+        mw, eng = self._window(app, monkeypatch, FakeSettings({"output_channel": long.key}), eng)
+        fm = mw._output_menu.fontMetrics()
+        for act in mw._output_menu.actions():
+            if not act.isSeparator():
+                assert fm.horizontalAdvance(act.text()) <= mw._OUTPUT_MENU_W - mw._OUTPUT_MENU_PAD
+        assert "WASAPI 独占" in mw._output_actions[long.key].text()
+        assert "…" in mw._output_actions[long.key].text()
 
     def test_check_marker_follows_selection(self, app, monkeypatch):
         target = by_mode("exclusive")
         mw, eng = self._window(app, monkeypatch)
         mw._choose_output(target)
         rows = {a.data().key: a.text() for a in mw._output_menu.actions() if not a.isSeparator()}
-        assert rows[target.key] == "✓ 独占 — DAC B"
+        assert rows[target.key] == "✓ WASAPI 独占 — DAC B"
         assert not rows[by_mode("system").key].startswith("✓")
 

@@ -128,9 +128,19 @@ class TestText:
         e = resolve_channel(_entries(), "Windows WASAPI", "DAC", "shared")
         assert e.status_text(name=elide("Realtek Digital Output", 12)) == "WASAPI · Realtek Dig…"
 
-    def test_menu_label_shape(self):
+    def test_menu_label_includes_protocol(self):
         e = resolve_channel(_entries(), "Windows WASAPI", "DAC", "exclusive")
-        # 协议在分组表头上，行里不重复 —— 行只写模式 + 设备名
-        assert e.menu_label() == "独占 — DAC"
-        assert e.menu_label(note="不可用") == "独占 — DAC · 不可用"
-        assert e.menu_label(name=elide("Realtek Digital Output", 12)) == "独占 — Realtek Dig…"
+        # 协议写进行里 —— 扫一眼就能看出这条是系统还是 WASAPI
+        assert e.menu_label() == "WASAPI 独占 — DAC"
+        assert e.menu_label(note="不可用") == "WASAPI 独占 (不可用) — DAC"
+        assert e.menu_label(name=elide("Realtek Digital Output", 12)) == "WASAPI 独占 — Realtek Dig…"
+        s = _entries()[0]
+        assert s.menu_label(note="MME") == "系统 (MME) — Speakers (Realtek)"
+
+    def test_button_label_mode_first_no_protocol(self):
+        exc = resolve_channel(_entries(), "Windows WASAPI", "DAC", "exclusive")
+        sh = resolve_channel(_entries(), "Windows WASAPI", "DAC", "shared")
+        assert exc.button_label() == "独占 · DAC"
+        assert sh.button_label(fallback=True) == "共享（回退） · DAC"
+        tr = {"独占": "Exclusive", "共享": "Shared"}.get
+        assert exc.button_label(tr=tr) == "Exclusive · DAC"
