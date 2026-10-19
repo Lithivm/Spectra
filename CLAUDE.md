@@ -285,6 +285,13 @@ MainWindow (QMainWindow)
 
 - 所有 Qt signal-slot 主线程回调使用 `@safe_slot` 装饰器
 
+**worker 生命周期（`_start_worker` / `_RUNNING_WORKERS`）**
+
+- 所有 QThread worker 经 `_start_worker(worker, owner)` 启动：wrapper 钉在模块级 `_RUNNING_WORKERS` 直到 `finished`；窗口 `destroyed` 时 `_shutdown_worker` 中断 + `wait(2000)`
+- 为什么：wrapper 被 GC 时线程还在跑 → sip 析构一个正在运行的 QThread = UB → 原生崩溃（CI 的 `Windows fatal exception: access violation`，崩在 `app.processEvents()` —— GC 由事件循环里的分配触发，所以栈顶看着不像 GC）
+- `tests/test_worker_lifetime.py` 钉住这个时序（慢 preload worker + 强制 GC + 断言线程被收尾）
+- 状态栏输出文案不再逐字符 `elide`：宽度不够直接切到 `status_text(full=False)`（协议 + 独占标记），否则「独占」会被缩到中间丢掉，且结果取决于字体/DPI
+
 **MetadataPanel 语言切换**
 
 - 存储 `_section_labels`、`_info_rows`、`_tag_rows`、`_analysis_rows` widget 引用列表
@@ -396,7 +403,8 @@ spectra.backend.core
 
 ---
 
-> 最后更新: 2026-10-18 (播放侧两件事：① 真立体声（传 `analyzer.data`，mono 复制到设备声道数）② WASAPI 输出通道选择 —— `src/spectra/backend/output_devices.py` 数据层 + `convert.quantize`（int32 先限幅）+ 引擎按通道流/直通/回退 + UI 展开列表和状态栏专用栏位 + QSettings 按名字持久化 + 启动后台探测一次（不在 `__init__` 开流）；版本 1.5.0)
+> 最后更新: 2026-10-19 (CI 崩溃修复：`_start_worker` + `_RUNNING_WORKERS` 注册表钉住 QThread wrapper 直到 `finished`，窗口 `destroyed` 收尾线程；状态栏文案不再逐字符 elide（保「独占」标记）；`tests/test_worker_lifetime.py` 钉时序)
+> 上一更新: 2026-10-18 (播放侧两件事：① 真立体声（传 `analyzer.data`，mono 复制到设备声道数）② WASAPI 输出通道选择 —— `src/spectra/backend/output_devices.py` 数据层 + `convert.quantize`（int32 先限幅）+ 引擎按通道流/直通/回退 + UI 展开列表和状态栏专用栏位 + QSettings 按名字持久化 + 启动后台探测一次（不在 `__init__` 开流）；版本 1.5.0)
 > 上一更新: 2026-10-17 (mel 口径统一为 Slaney：新增 `src/spectra/backend/scales.py` 作 CPU 侧唯一实现，刻线/cursor 不再走 librosa，shader mel 分支改成分段镜像，`tests/test_scales.py` 钉常量)
 > 上一更新: 2026-10-17 (CLAUDE.md 事实校正：模块表补 `loudness.py`、外部导入前缀改 `spectra.backend.core`、STFT 缓存写成 `_MAX_STFT_CACHE=8` 手动 LRU、§5 依赖图按新布局重写（补 lang/anim/icons/progress_bar/loudness）、§6 入口与 datas、§7 延迟加载对齐（quality 不再出现 librosa/pyloudnorm）、mel 口径 Slaney/HTK 不统一已量化并列入 TODO 7)
 > 上一更新: 2026-10-17 (目录重构：`src/spectra/{backend(原 analyzer), frontend(原 ui), lang.py, __main__.py, assets/}` + import 前缀 `spectra.` + PyInstaller datas / CI PYTHONPATH / pyproject packages 跟着改；根目录清理：run_check.py 删、乱命名 PNG 残留删、`_remote_ref/` 忽略、`!spectra.spec` 反忽略、`assets/*.png` 不再被 `*.png` 误排（之前干净 clone 没有品牌 logo）)

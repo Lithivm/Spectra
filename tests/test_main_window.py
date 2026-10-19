@@ -545,7 +545,7 @@ class TestOutputSelection:
         text = mw._output_btn.text()
         assert text.startswith("独占 · ") and "…" in text
         assert mw._output_btn.fontMetrics().horizontalAdvance(text) <= mw._OUTPUT_BTN_W - 24
-        assert "Realtek Digital" in text                       # 缩了但字段还在
+        assert text.startswith("独占 · Realtek")                 # 缩的是尾巴，头部字段还在
         assert mw._output_btn.toolTip().endswith("(Realtek USB Audio)")   # 全名在 tooltip
 
     def test_menu_has_hover_highlight_and_fixed_width(self, app, monkeypatch):
@@ -562,7 +562,10 @@ class TestOutputSelection:
         rows = {a.data().key: a.text() for a in mw._output_menu.actions() if not a.isSeparator()}
         sys_e, exc_e, sh_e = by_mode("system"), by_mode("exclusive"), by_mode("shared")
         # 系统行附注它实际走的 host API；行里写协议 + 模式 + 设备名
-        assert rows[sys_e.key] == f"✓ 系统 ({sys_e.host_api}) — {sys_e.device_name}"   # 默认选中 = 系统条
+        # （设备名可能被像素预算缩掉，所以只断言头部结构，不断言全名）
+        head = f"✓ 系统 ({sys_e.host_api}) — "
+        assert rows[sys_e.key].startswith(head)
+        assert rows[sys_e.key][len(head):]                      # 设备名至少留了一段
         assert rows[exc_e.key] == "WASAPI 独占 — DAC B"
         assert rows[sh_e.key] == "WASAPI 共享 — DAC B"
 

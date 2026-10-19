@@ -433,6 +433,72 @@ def safe_slot(fn):
     return _wrapper
 
 
+# ── worker 生命周期 ────────────────────────────────────────────────
+# QThread 的 wrapper 被 GC 时 sip 会直接 ~QThread —— 线程还在跑就析构是原生崩溃
+# （access violation，不是 Python 异常）。测试/关窗时窗口对象说散就散，而 preload
+# 里 librosa 的 import 要几秒，所以必须把 wrapper 钉到 thread 结束。
+_RUNNING_WORKERS: list[QThread] = []
+
+
+def _release_worker(worker: QThread) -> None:
+    try:
+        _RUNNING_WORKERS.remove(worker)
+    except ValueError:
+        pass
+
+
+def _shutdown_worker(worker) -> None:
+    """窗口析构时收尾：线程还在跑就中断并等它结束。
+
+    注册表里的引用不在这里释放 —— 真正 finished 才释放，否则 wrapper 会在
+    线程还在跑时被 GC，sip 直接 ~QThread → 原生崩溃。
+    """
+    try:
+        is_running = getattr(worker, "isRunning", None)   # 测试里的同步替身没有这个方法
+        if not callable(is_running) or not is_running():
+            return
+        worker.requestInterruption()
+        worker.wait(2000)
+    except (RuntimeError, ValueError):
+        # RuntimeError = wrapper 已被 sip 析构（线程早就结束了），不用收尾
+        pass
+
+
+def _start_worker(worker: QThread, owner=None) -> QThread | None:
+    """Start *worker*, keeping its wrapper alive until the thread finishes.
+
+    `finished` 挂接在 start 之前：start 后 isRunning() 与 GC 之间有竞态，
+    快 worker 可能已经结束 → 注册表里留一个永远不释放的引用。
+    """
+    if worker is None:
+        return None
+    # finished 是无参信号 —— 直接 connect(_release_worker) 会在 Qt 侧抛 TypeError，
+    # 那个异常在事件循环里没人接 → 原生崩溃。测试里的同步替身没有 finished，兼容一下。
+    finished = getattr(worker, "finished", None)
+    if finished is not None:
+        try:
+            finished.connect(lambda w=worker: _release_worker(w))
+        except (TypeError, RuntimeError):
+            pass
+    # 窗口先于 worker 死是常态（测试里尤其如此）：destroyed 时把线程收掉，
+    # 不让它比窗口活得长 —— 否则 emit 到一个已析构的接收者就是 UB。
+    destroyed = getattr(owner, "destroyed", None)
+    if destroyed is not None:
+        try:
+            # destroyed 把被析构的 QObject 作为第一个参数传进来 —— 不接住它，
+            # lambda 的默认参数 w 会被覆盖成窗口本身
+            destroyed.connect(lambda _obj, w=worker: _shutdown_worker(w))
+        except (TypeError, RuntimeError):
+            pass
+    if not isinstance(worker, QThread):
+        # 测试里的同步替身（_SyncProbeWorker）没有线程可言，不入注册表
+        worker.start()
+        return worker
+    _RUNNING_WORKERS.append(worker)
+    worker.start()
+    return worker
+
+
 class _SpectrumWorker(QThread):
     stream_init  = pyqtSignal(object, int, float)         # freqs, total_cols, duration
     stream_block = pyqtSignal(int, object)                 # c0, block_db
@@ -658,7 +724,7 @@ class MainWindow(QMainWindow):
         self._preload_worker = _PreloadWorker()
         self._preload_worker.ready.connect(
             lambda: logger.debug("Preload complete"))
-        self._preload_worker.start()
+        _start_worker(self._preload_worker, self)
 
     def _setup_ui(self) -> None:
         self.setWindowTitle(self._title)
@@ -1123,7 +1189,7 @@ class MainWindow(QMainWindow):
         self._apply_output(ChannelCapability(channel=chosen, ok=True, dtype="float32", probed=False))
         self._probe_worker = _ProbeWorker(self._playback, chosen)
         self._probe_worker.ready.connect(self._on_probe_result)
-        self._probe_worker.start()
+        _start_worker(self._probe_worker, self)
 
     def _rebuild_output_menu(self, entries, current) -> None:
         if self._output_menu is None:
@@ -1190,10 +1256,12 @@ class MainWindow(QMainWindow):
         self._render_output_text()
 
     def _current_output_channel(self) -> OutputChannel | None:
-        info = self._playback.info
-        if info is not None and info.channel is not None:
+        info = getattr(self._playback, "info", None)
+        if info is not None and getattr(info, "channel", None) is not None:
             return info.channel
-        return self._playback.channel
+        ch = getattr(self._playback, "channel", None)
+        # 没有真设备时引擎给 None；测试替身可能给别的 —— 只认 OutputChannel
+        return ch if isinstance(ch, OutputChannel) else None
 
     def _apply_output(self, cap) -> None:
         if cap is None or cap.channel is None:
@@ -1249,12 +1317,11 @@ class MainWindow(QMainWindow):
         fm = self._output_label.fontMetrics()
         full = ch.status_text(full=True, tr=self._tr) + suffix
         narrow = ch.status_text(full=False, tr=self._tr)
-        # 宽度不够就缩到只剩协议；独占的「独占」标记保留 —— 它意味着静音其他应用
+        # 宽度不够就缩到只剩协议（独占的「独占」标记在 narrow 里 —— 它意味着静音其他应用）。
+        # 不逐字符 elide：字缩到中间会把「独占」切掉，而且结果取决于字体/DPI，不可复现。
         spare = fm.horizontalAdvance(self._status_label.text()) + 2 * SIDE + 16
         budget_px = max(80, self.width() - spare)
-        text = full if fm.horizontalAdvance(full) <= budget_px else narrow
-        char_w = max(fm.horizontalAdvance("m"), 1)
-        self._output_label.setText(elide(text, max(1, int(budget_px / char_w))))
+        self._output_label.setText(full if fm.horizontalAdvance(full) <= budget_px else narrow)
 
     def _on_palette_changed(self, name: str) -> None:
         self._current_palette = name
@@ -1304,7 +1371,7 @@ class MainWindow(QMainWindow):
             self._spectrum_worker = _SpectrumWorker(self._analyzer, self._fft_size, self._mode)
             self._spectrum_worker.result_ready.connect(self._on_spectrum_done)
             self._spectrum_worker.fading.connect(lambda: self._spec.hide_progress())
-        self._spectrum_worker.start()
+        _start_worker(self._spectrum_worker, self)
 
     def _on_open_file(self) -> None:
         formats = sorted(SUPPORTED_EXTENSIONS)
@@ -1370,7 +1437,7 @@ class MainWindow(QMainWindow):
         self._load_worker = _LoadWorker(path)
         self._load_worker.loaded.connect(self._on_load_done)
         self._load_worker.error.connect(self._on_load_error)
-        self._load_worker.start()
+        _start_worker(self._load_worker, self)
 
     @safe_slot
     def _on_load_done(self) -> None:
@@ -1395,7 +1462,7 @@ class MainWindow(QMainWindow):
 
         self._quality_worker = _QualityWorker(analyzer)
         self._quality_worker.result_ready.connect(self._on_quality_done)
-        self._quality_worker.start()
+        _start_worker(self._quality_worker, self)
 
         t0 = time.perf_counter()
         self._wave.set_audio(
@@ -1429,7 +1496,7 @@ class MainWindow(QMainWindow):
         else:
             self._spectrum_worker.result_ready.connect(self._on_spectrum_done)
             self._spectrum_worker.fading.connect(lambda: self._spec.hide_progress())
-        self._spectrum_worker.start()
+        _start_worker(self._spectrum_worker, self)
 
     @safe_slot
     def _on_load_error(self, msg: str) -> None:
@@ -1669,7 +1736,7 @@ class MainWindow(QMainWindow):
         dialog.cancelled.connect(on_cancel)
         dialog._export_btn.clicked.connect(on_export)
 
-        worker.start()
+        _start_worker(worker, self)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
@@ -1763,6 +1830,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._cancel_spectrum()
         self._cancel_quality()
+        self._cancel_load()
+        for worker in (self._preload_worker, self._probe_worker):
+            _shutdown_worker(worker)
         if self._batch_worker is not None and self._batch_worker.isRunning():
             self._batch_worker.requestInterruption()
             self._batch_worker.wait(3000)
