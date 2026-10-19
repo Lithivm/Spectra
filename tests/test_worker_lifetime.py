@@ -81,6 +81,15 @@ def _slow_workers(monkeypatch, seconds=3.0):
     monkeypatch.setattr(mwmod._ProbeWorker, "run", run)
 
 
+def _thread_done(worker) -> bool:
+    """线程结束 = 没在跑，或者 wrapper 已被 sip 析构（finished 后释放注册表引用，
+    GC 析构 wrapper 是安全的 —— 崩溃只发生在析构一个还在跑的 QThread）。"""
+    try:
+        return not worker.isRunning()
+    except RuntimeError:
+        return True
+
+
 def test_window_gc_does_not_kill_running_thread(app, monkeypatch):
     """窗口对象散掉 + 强制 GC：wrapper 必须被钉住到线程结束，进程不能崩。"""
     _slow_workers(monkeypatch)
@@ -94,10 +103,10 @@ def test_window_gc_does_not_kill_running_thread(app, monkeypatch):
         gc.collect()
         app.processEvents()
     for w in workers:
-        assert not w.isRunning(), "窗口析构时 destroyed 钩子应收尾线程，而不是让 GC 析构一个还在跑的 QThread"
+        assert _thread_done(w), "窗口析构时 destroyed 钩子应收尾线程，而不是让 GC 析构一个还在跑的 QThread"
     gc.collect()
     app.processEvents()
-    assert not [w for w in _RUNNING_WORKERS if w.isRunning()], "注册表里不该留还在跑的线程"
+    assert not [w for w in _RUNNING_WORKERS if not _thread_done(w)], "注册表里不该留还在跑的线程"
 
 
 def test_close_event_stops_workers(app, monkeypatch):
@@ -106,7 +115,7 @@ def test_close_event_stops_workers(app, monkeypatch):
     mw.show()
     app.processEvents()
     preload = mw._preload_worker
-    assert preload.isRunning(), "未 close 时慢 preload 应还在跑"
+    assert not _thread_done(preload), "未 close 时慢 preload 应还在跑"
     mw.close()
     app.processEvents()
-    assert not preload.isRunning(), "closeEvent 之后 preload 线程应结束"
+    assert _thread_done(preload), "closeEvent 之后 preload 线程应结束"
